@@ -87,6 +87,9 @@ const upload = multer({
 });
 
 // ─── Middleware ────────────────────────────────────────────────────────────────
+// IMPORTANT: Trust proxy BEFORE rate limiting middleware
+// This tells Express to trust X-Forwarded-For header from Vercel
+app.set('trust proxy', 1);
 app.use(cors());
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
@@ -104,6 +107,10 @@ const apiLimiter = rateLimit({
   max: 8,              // max 8 requests per minute per IP
   standardHeaders: true,
   legacyHeaders: false,
+  // Use req.ip for proper IP detection when behind proxy (trust proxy enabled above)
+  keyGenerator: (req, res) => req.ip || req.connection.remoteAddress,
+  // Skip health checks if needed
+  skip: (req, res) => req.path === '/health',
   message: {
     success: false,
     error: "rate_limited",
