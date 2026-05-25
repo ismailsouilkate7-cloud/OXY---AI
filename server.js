@@ -7,8 +7,7 @@ import fs from "fs";
 import multer from "multer";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import rateLimit from "express-rate-limit";
-import ConversationService from "./conversationService.js";
-
+import memoryStore from "./memoryStore.js"; // Changed from ConversationService
 dotenv.config();
 
 // ─── System Prompt ────────────────────────────────────────────────────────────
@@ -108,7 +107,6 @@ const apiLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   // Use req.ip for proper IP detection when behind proxy (trust proxy enabled above)
-  keyGenerator: (req, res) => req.ip || req.connection.remoteAddress,
   // Skip health checks if needed
   skip: (req, res) => req.path === '/health',
   message: {
@@ -258,44 +256,35 @@ app.use((err, req, res, next) => {
 });
 
 /* ═══════════════════════════════════════════════════════════════
-   CHAT API — WITH DATABASE PERSISTENCE
+   CHAT API — WITH FILE-BASED PERSISTENCE
 ═══════════════════════════════════════════════════════════════ */
 app.post("/api/chat", async (req, res) => {
   try {
-    const { message, imageUrl, userId, conversationId } = req.body;
+    const { message, imageUrl, sessionId } = req.body; // Changed userId, conversationId to sessionId
 
     if (!message || message.trim() === "") {
       return res.status(400).json({ error: "Message cannot be empty" });
     }
 
-    if (!userId) {
-      return res.status(400).json({ error: "userId is required" });
-    }
-
-    // Generate or use provided conversationId
-    let activeConversationId = conversationId;
-    if (!activeConversationId) {
-      console.log(`\n🆕 [CHAT] Creating new conversation for user: ${userId}`);
-      const conversation = await ConversationService.createConversation(userId);
-      activeConversationId = conversation.conversation_id;
+    if (!sessionId) { // Ensure sessionId exists
+      return res.status(400).json({ error: "sessionId is required" });
     }
 
     console.log(
-      `\n📨 [CHAT] Session: ${activeConversationId} | User: ${userId} | Message: "${message.substring(0, 50)}${message.length > 50 ? "..." : ""}"${imageUrl ? ` | Image: ${imageUrl}` : ""}`
+      `\n📨 [CHAT] Session: ${sessionId} | Message: "${message.substring(0, 50)}${message.length > 50 ? "..." : ""}"${imageUrl ? ` | Image: ${imageUrl}` : ""}`
     );
 
-    // 1️⃣ LOAD PREVIOUS MESSAGES FROM DATABASE
-    const previousMessages = await ConversationService.getLastMessages(
-      activeConversationId,
+    // 1️⃣ LOAD PREVIOUS MESSAGES FROM MEMORYSTORE
+    const previousMessages = memoryStore.getLastMessages(
+      sessionId,
       10
     );
     console.log(
       `📚 [MEMORY] Loaded ${previousMessages.length} previous messages for context`
     );
 
-    // 2️⃣ ADD CURRENT USER MESSAGE TO DATABASE
-    await ConversationService.addMessage(activeConversationId, "user", message);
-
+    // 2️⃣ ADD CURRENT USER MESSAGE TO MEMORYSTORE
+    memoryStore.addUserMessage(sessionId, message);
     const apiKey = process.env.GEMINI_API_KEY;
     console.log(
       `🔑 [API KEY CHECK] GEMINI_API_KEY present: ${apiKey ? "✅ YES" : "❌ MISSING"}`
@@ -356,17 +345,15 @@ app.post("/api/chat", async (req, res) => {
           `✅ [CHAT+IMAGE] Success! Reply: "${reply.substring(0, 100)}..."`
         );
 
-        // 3️⃣ SAVE AI RESPONSE TO DATABASE
-        await ConversationService.addMessage(
-          activeConversationId,
-          "assistant",
+        // 3️⃣ SAVE AI RESPONSE TO MEMORYSTORE
+        memoryStore.addAIMessage(
+          sessionId,
           reply
         );
 
         return res.json({
           reply,
-          conversationId: activeConversationId,
-          userId: userId,
+          sessionId: sessionId,
           messagesCount: previousMessages.length + 2, // user + assistant
         });
       } catch (imgErr) {
@@ -376,7 +363,7 @@ app.post("/api/chat", async (req, res) => {
       }
     }
 
-    // TEXT-ONLY CHAT PATH WITH DATABASE & DEBUG LOGGING
+    // TEXT-ONLY CHAT PATH WITH MEMORYSTORE & DEBUG LOGGING
     const modelName = "gemini-2.5-flash";
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
     console.log(`\n📝 [TEXT CHAT MODE]`);
@@ -472,18 +459,16 @@ app.post("/api/chat", async (req, res) => {
       `✅ [CHAT] Success! Reply: "${reply.substring(0, 100)}..."`
     );
 
-    // 3️⃣ SAVE AI RESPONSE TO DATABASE
-    await ConversationService.addMessage(
-      activeConversationId,
-      "assistant",
+    // 3️⃣ SAVE AI RESPONSE TO MEMORYSTORE
+    memoryStore.addAIMessage(
+      sessionId,
       reply
     );
 
     res.json({
       success: true,
       reply,
-      conversationId: activeConversationId,
-      userId: userId,
+      sessionId: sessionId,
       messagesCount: previousMessages.length + 2, // user + assistant
     });
   } catch (err) {
@@ -515,114 +500,109 @@ app.post("/api/chat", async (req, res) => {
 });
 
 /* ═══════════════════════════════════════════════════════════════
-   CONVERSATION MANAGEMENT API
+   SESSION MANAGEMENT API
 ═══════════════════════════════════════════════════════════════ */
 
 /**
- * POST /api/conversations
- * Create a new conversation for a user
+ * POST /api/sessions/:sessionId/clear
+ * Clear all messages in a session (keep session metadata)
  */
-app.post("/api/conversations", async (req, res) => {
+app.post("/api/sessions/:sessionId/clear", (req, res) => {
   try {
-    const { userId, title } = req.body;
+    const { sessionId } = req.params;
 
-    if (!userId) {
-      return res.status(400).json({ error: "userId is required" });
-    }
+    const success = memoryStore.clearSessionMessages(sessionId);
 
-    const conversation = await ConversationService.createConversation(
-      userId,
-      title || "New Conversation"
-    );
-
-    res.json({
-      success: true,
-      conversation,
-    });
-  } catch (err) {
-    console.error(`❌ [API] Error creating conversation:`, err.message);
-    res.status(500).json({
-      error: "Failed to create conversation",
-      message: err.message,
-    });
-  }
-});
-
-/**
- * GET /api/conversations/:conversationId
- * Get a conversation with its messages
- */
-app.get("/api/conversations/:conversationId", async (req, res) => {
-  try {
-    const { conversationId } = req.params;
-
-    const conversation = await ConversationService.getConversationFull(
-      conversationId
-    );
-
-    if (!conversation) {
-      return res.status(404).json({ error: "Conversation not found" });
+    if (!success) {
+      return res.status(404).json({ error: "Session not found" });
     }
 
     res.json({
       success: true,
-      conversation,
+      message: `Messages in session ${sessionId} cleared`,
     });
   } catch (err) {
-    console.error(`❌ [API] Error fetching conversation:`, err.message);
+    console.error(`❌ [API] Error clearing messages:`, err.message);
     res.status(500).json({
-      error: "Failed to fetch conversation",
+      error: "Failed to clear messages",
       message: err.message,
     });
   }
 });
 
 /**
- * GET /api/users/:userId/conversations
- * Get all conversations for a user
+ * DELETE /api/sessions/:sessionId
+ * Delete a session and all its messages
  */
-app.get("/api/users/:userId/conversations", async (req, res) => {
+app.delete("/api/sessions/:sessionId", (req, res) => {
   try {
-    const { userId } = req.params;
-    const limit = parseInt(req.query.limit) || 50;
+    const { sessionId } = req.params;
 
-    const conversations = await ConversationService.getUserConversations(
-      userId,
-      limit
-    );
+    const success = memoryStore.deleteSession(sessionId);
+
+    if (!success) {
+      return res.status(404).json({ error: "Session not found" });
+    }
 
     res.json({
       success: true,
-      userId,
-      conversationCount: conversations.length,
-      conversations,
+      message: `Session ${sessionId} deleted`,
     });
   } catch (err) {
-    console.error(`❌ [API] Error fetching user conversations:`, err.message);
+    console.error(`❌ [API] Error deleting session:`, err.message);
     res.status(500).json({
-      error: "Failed to fetch conversations",
+      error: "Failed to delete session",
       message: err.message,
     });
   }
 });
 
 /**
- * GET /api/conversations/:conversationId/messages
- * Get messages from a conversation
+ * GET /api/sessions/:sessionId/info
+ * Get info about a session
  */
-app.get("/api/conversations/:conversationId/messages", async (req, res) => {
+app.get("/api/sessions/:sessionId/info", (req, res) => {
   try {
-    const { conversationId } = req.params;
+    const { sessionId } = req.params;
+    const sessionInfo = memoryStore.getSessionInfo(sessionId);
+
+    if (!sessionInfo) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+
+    res.json({
+      success: true,
+      session: sessionInfo,
+    });
+  } catch (err) {
+    console.error(`❌ [API] Error fetching session info:`, err.message);
+    res.status(500).json({
+      error: "Failed to fetch session info",
+      message: err.message,
+    });
+  }
+});
+
+/**
+ * GET /api/sessions/:sessionId/messages
+ * Get messages from a session
+ */
+app.get("/api/sessions/:sessionId/messages", (req, res) => {
+  try {
+    const { sessionId } = req.params;
     const limit = parseInt(req.query.limit) || 0;
-
-    const messages = await ConversationService.getConversationMessages(
-      conversationId,
-      limit
+    const messages = memoryStore.getLastMessages(
+      sessionId,
+      limit > 0 ? limit : undefined
     );
+
+    if (!messages) {
+      return res.status(404).json({ error: "Session not found or no messages" });
+    }
 
     res.json({
       success: true,
-      conversationId,
+      sessionId,
       messageCount: messages.length,
       messages,
     });
@@ -636,62 +616,12 @@ app.get("/api/conversations/:conversationId/messages", async (req, res) => {
 });
 
 /**
- * DELETE /api/conversations/:conversationId
- * Delete a conversation and all its messages
- */
-app.delete("/api/conversations/:conversationId", async (req, res) => {
-  try {
-    const { conversationId } = req.params;
-
-    const success = await ConversationService.deleteConversation(
-      conversationId
-    );
-
-    res.json({
-      success: true,
-      message: `Conversation ${conversationId} deleted`,
-    });
-  } catch (err) {
-    console.error(`❌ [API] Error deleting conversation:`, err.message);
-    res.status(500).json({
-      error: "Failed to delete conversation",
-      message: err.message,
-    });
-  }
-});
-
-/**
- * POST /api/conversations/:conversationId/clear
- * Clear all messages in a conversation (keep conversation metadata)
- */
-app.post("/api/conversations/:conversationId/clear", async (req, res) => {
-  try {
-    const { conversationId } = req.params;
-
-    const success = await ConversationService.clearConversationMessages(
-      conversationId
-    );
-
-    res.json({
-      success: true,
-      message: `Messages in conversation ${conversationId} cleared`,
-    });
-  } catch (err) {
-    console.error(`❌ [API] Error clearing messages:`, err.message);
-    res.status(500).json({
-      error: "Failed to clear messages",
-      message: err.message,
-    });
-  }
-});
-
-/**
  * GET /api/stats
- * Get database statistics
+ * Get memoryStore statistics
  */
-app.get("/api/stats", async (req, res) => {
+app.get("/api/stats", (req, res) => {
   try {
-    const stats = await ConversationService.getStats();
+    const stats = memoryStore.getStats();
 
     res.json({
       success: true,
@@ -705,7 +635,6 @@ app.get("/api/stats", async (req, res) => {
     });
   }
 });
-
 /* ═══════════════════════════════════════════════════════════════
    ANALYZE IMAGE
 ═══════════════════════════════════════════════════════════════ */
@@ -735,7 +664,6 @@ app.post("/api/analyze-image", async (req, res) => {
 });
 */
 // Removed the /api/analyze-image route as image analysis is now integrated into /api/chat
-
 /* ═══════════════════════════════════════════════════════════════
    404 & ERROR HANDLING
 ═══════════════════════════════════════════════════════════════ */
@@ -760,17 +688,8 @@ app.use((err, req, res, next) => {
 ═══════════════════════════════════════════════════════════════ */
 const PORT = process.env.PORT || 5173;
 
-// Initialize database on startup
+// Removed database initialization on startup
 async function startServer() {
-  try {
-    console.log("\n📋 [STARTUP] Initializing database...");
-    await ConversationService.initializeDatabase();
-    console.log("✅ [STARTUP] Database initialized successfully\n");
-  } catch (error) {
-    console.error("⚠️  [STARTUP] Database initialization warning:", error.message);
-    console.log("ℹ️  [STARTUP] Continuing anyway - tables may already exist\n");
-  }
-
   app.listen(PORT, () => {
     console.log(`\n🚀 OXY AI running on port ${PORT}`);
     console.log(`   Local: http://localhost:${PORT}`);
@@ -782,3 +701,4 @@ startServer().catch((err) => {
   console.error("❌ [STARTUP] Failed to start server:", err.message);
   process.exit(1);
 });
+
