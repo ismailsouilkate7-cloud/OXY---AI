@@ -816,18 +816,13 @@ async function sendMessage() {
   removeSelectedImage();
   updateSendButton();
 
-  const existingTyping = document.getElementById('typingIndicator');
-  if (existingTyping) existingTyping.remove();
-
-  streamMessageId = generateMessageId();
-  const streamMessageData = { id: streamMessageId, text: '', sender: 'ai' };
-  messages.push(streamMessageData);
-  const messageElement = renderMessage(streamMessageData);
-  chatContainer.appendChild(messageElement);
-  scrollToBottom();
-
   streamAbortController = new AbortController();
   let fullReply = '';
+  let firstTokenReceived = false;
+
+  // Show typing indicator immediately — it will be swapped for the real bubble on first token
+  streamMessageId = generateMessageId();
+  addTypingIndicator();
 
   try {
     const response = await fetch('/api/chat/stream', {
@@ -899,6 +894,16 @@ async function sendMessage() {
         }
 
         if (parsed.token) {
+          // First token: swap typing indicator for real streaming bubble
+          if (!firstTokenReceived) {
+            firstTokenReceived = true;
+            const typingEl = document.getElementById('typingIndicator');
+            if (typingEl) typingEl.remove();
+            const streamMessageData = { id: streamMessageId, text: '', sender: 'ai' };
+            messages.push(streamMessageData);
+            const messageElement = renderMessage(streamMessageData);
+            chatContainer.appendChild(messageElement);
+          }
           fullReply += parsed.token;
           updateStreamingMessage(streamMessageId, fullReply);
           scrollToBottom();
@@ -927,6 +932,19 @@ async function sendMessage() {
         if (parsed.token) fullReply += parsed.token;
         if (parsed.fullText) fullReply = parsed.fullText;
       } catch {}
+    }
+
+    // Ensure typing indicator is removed in all end-of-stream cases
+    const typingEl = document.getElementById('typingIndicator');
+    if (typingEl) {
+      typingEl.remove();
+      // If no bubble rendered yet (empty stream), render one now
+      if (!firstTokenReceived) {
+        const streamMessageData = { id: streamMessageId, text: '', sender: 'ai' };
+        messages.push(streamMessageData);
+        const messageElement = renderMessage(streamMessageData);
+        chatContainer.appendChild(messageElement);
+      }
     }
 
     if (!fullReply) {
@@ -958,6 +976,18 @@ async function sendMessage() {
     sendAINotification();
 
   } catch (err) {
+    // Always remove typing indicator on error
+    const typingEl = document.getElementById('typingIndicator');
+    if (typingEl) {
+      typingEl.remove();
+      if (!firstTokenReceived) {
+        const streamMessageData = { id: streamMessageId, text: '', sender: 'ai' };
+        messages.push(streamMessageData);
+        const messageElement = renderMessage(streamMessageData);
+        chatContainer.appendChild(messageElement);
+      }
+    }
+
     if (err.name === 'AbortError') {
       console.log('⚠️ Stream aborted by user');
       return;
@@ -1177,6 +1207,10 @@ function addErrorMessage(text) {
 }
 
 function addTypingIndicator() {
+  // Remove any stale indicator before adding a new one
+  const stale = document.getElementById('typingIndicator');
+  if (stale) stale.remove();
+
   const row = document.createElement('div');
   row.className = 'message-row ai-row';
   row.id = 'typingIndicator';
@@ -1191,6 +1225,7 @@ function addTypingIndicator() {
         <div class="typing-bar"></div>
         <div class="typing-bar"></div>
       </div>
+      <span class="typing-label">OXY is thinking…</span>
     </div>`;
   chatContainer.appendChild(row);
   scrollToBottom();
