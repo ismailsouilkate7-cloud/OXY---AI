@@ -147,18 +147,31 @@ const FRIENDLY_ERRORS = {
   'default': "🤖 Service temporarily unavailable. 3awed jarrab ba3d chwia."
 };
 
-// ─── FIXED ERROR HANDLER ─────────────────────────────────────────────────────
-function getFriendlyErrorMessage(error) {
+// ─── ENHANCED ERROR HANDLER WITH DEBUGGING ──────────────────────────────────
+function getFriendlyErrorMessage(error, includeDebugInfo = false) {
   const errorStr =
     typeof error === "string"
       ? error
       : (error?.message || error?.error?.message || JSON.stringify(error || ""));
 
   const lower = errorStr.toLowerCase();
-
   const statusCode = error?.status || error?.statusCode;
+  const stack = error?.stack || "No stack trace";
 
-  console.error("❌ Gemini/API Error:", errorStr);
+  // COMPREHENSIVE ERROR LOGGING
+  console.error("\n" + "=".repeat(80));
+  console.error("❌ [GEMINI API ERROR]");
+  console.error("=".repeat(80));
+  console.error("Error Message:", errorStr);
+  console.error("Status Code:", statusCode);
+  console.error("Error Object:", JSON.stringify(error, null, 2));
+  console.error("Stack Trace:", stack);
+  console.error("=".repeat(80) + "\n");
+
+  // DEBUGGING MODE: Return actual error
+  if (includeDebugInfo) {
+    return `[DEBUG] ${statusCode || 'UNKNOWN'} - ${errorStr} | Stack: ${stack.split('\n')[1] || 'N/A'}`;
+  }
 
   // PRIORITY 1: HTTP status codes
   if (statusCode === 429) {
@@ -245,7 +258,7 @@ app.use((err, req, res, next) => {
 });
 
 /* ═══════════════════════════════════════════════════════════════
-   CHAT API — WITH PERSISTENT MEMORY
+   CHAT API — WITH PERSISTENT MEMORY & DEBUGGING
 ═══════════════════════════════════════════════════════════════ */
 app.post("/api/chat", async (req, res) => {
   try {
@@ -267,14 +280,19 @@ app.post("/api/chat", async (req, res) => {
     memoryStore.addUserMessage(session, message);
 
     const apiKey = process.env.GEMINI_API_KEY;
+    console.log(`🔑 [API KEY CHECK] GEMINI_API_KEY present: ${apiKey ? '✅ YES' : '❌ MISSING'}`);
     if (!apiKey) {
-      return res.status(500).json({ error: "Server Error", message: "GEMINI_API_KEY is not configured" });
+      const errorMsg = "❌ FATAL: GEMINI_API_KEY is not configured";
+      console.error(errorMsg);
+      return res.status(500).json({ error: "Server Error", message: errorMsg });
     }
 
     // Handle image if provided
     if (imageUrl) {
       try {
+        console.log(`🖼️  [IMAGE PROCESSING] Reading image from: ${imageUrl}`);
         const { base64, mimeType } = readImageFile(imageUrl);
+        console.log(`✅ [IMAGE LOADED] MIME type: ${mimeType}, Size: ${(base64.length / 1024).toFixed(2)}KB`);
         
         // Build content array with memory context + current message + image
         const contentParts = [];
@@ -294,11 +312,17 @@ app.post("/api/chat", async (req, res) => {
         contentParts.push({ text: message });
         contentParts.push({ inlineData: { mimeType, data: base64 } });
         
-        const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+        const modelName = "gemini-2.5-flash";
+        console.log(`🤖 [MODEL SELECTED] ${modelName}`);
+        console.log(`📤 [REQUEST] Image chat with ${contentParts.length} content parts`);
+        const model = genAI.getGenerativeModel({ model: modelName });
+        
+        console.log(`⏳ [API CALL] Sending request to Gemini API (image mode)...`);
         const result = await model.generateContent(contentParts);
+        console.log(`📬 [API RESPONSE] Received response from Gemini API`);
         const reply = result.response.text();
         
-        console.log(`✅ [CHAT+IMAGE] Reply: "${reply.substring(0, 100)}..."`);
+        console.log(`✅ [CHAT+IMAGE] Success! Reply: "${reply.substring(0, 100)}..."`);
         
         // 3️⃣ SAVE AI RESPONSE TO MEMORY
         memoryStore.addAIMessage(session, reply);
@@ -309,12 +333,18 @@ app.post("/api/chat", async (req, res) => {
           messagesCount: previousMessages.length + 2 // user + assistant
         });
       } catch (imgErr) {
-        console.error(`⚠️ Image chat error: ${imgErr.message} — falling back to text`);
+        console.error(`\n⚠️  [IMAGE ERROR] ${imgErr.message}`);
+        console.error(`Stack: ${imgErr.stack}`);
+        console.error(`Falling back to text-only mode...\n`);
       }
     }
 
-    // TEXT-ONLY CHAT PATH WITH MEMORY
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+    // TEXT-ONLY CHAT PATH WITH MEMORY & DEBUG LOGGING
+    const modelName = "gemini-2.5-flash";
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+    console.log(`\n📝 [TEXT CHAT MODE]`);
+    console.log(`🤖 [MODEL] ${modelName}`);
+    console.log(`🔗 [ENDPOINT] ${endpoint.replace(apiKey, '***API_KEY***')}`);
     
     // Build request with conversation history
     const contents = [];
@@ -336,7 +366,9 @@ app.post("/api/chat", async (req, res) => {
       contents: contents
     };
 
-    console.log(`📡 [API] Sending ${contents.length} content(s) to Gemini (${previousMessages.length} from memory)`);
+    console.log(`📤 [REQUEST BODY] ${contents.length} total messages (${previousMessages.length} from memory + current)`);
+    console.log(`📤 [REQUEST PAYLOAD]`, JSON.stringify(requestBody, null, 2));
+    console.log(`⏳ [API CALL] Sending request to Gemini API (text mode)...`);
 
     const response = await fetch(endpoint, {
       method: "POST",
@@ -344,44 +376,55 @@ app.post("/api/chat", async (req, res) => {
       body: JSON.stringify(requestBody)
     });
 
+    console.log(`📬 [API RESPONSE] Status: ${response.status} ${response.statusText}`);
     const data = await response.json();
+    console.log(`📨 [RESPONSE BODY]`, JSON.stringify(data, null, 2));
 
     if (!response.ok) {
-      const friendlyMsg = getFriendlyErrorMessage(data);
-      console.error(`❌ Gemini API responded with ${response.status}:`, data?.error?.message || data);
+      console.error(`\n❌ [API ERROR] HTTP ${response.status} Response:`);
+      console.error(JSON.stringify(data, null, 2));
+      // DEBUGGING: Return actual error message
+      const debugMsg = getFriendlyErrorMessage(data, true);
       return res.status(200).json({ 
         success: false, 
-        message: friendlyMsg,
-        reply: friendlyMsg
+        message: debugMsg,
+        reply: debugMsg,
+        debugError: data?.error || data
       });
     }
 
     if (!data.candidates || data.candidates.length === 0) {
-      const friendlyMsg = getFriendlyErrorMessage(data);
-      console.error(`❌ Gemini API returned no candidates:`, data);
+      console.error(`\n❌ [API ERROR] No candidates in response:`);
+      console.error(JSON.stringify(data, null, 2));
+      // DEBUGGING: Return actual error message
+      const debugMsg = getFriendlyErrorMessage(data, true);
       return res.status(200).json({ 
         success: false, 
-        message: friendlyMsg,
-        reply: friendlyMsg
+        message: debugMsg,
+        reply: debugMsg,
+        debugError: "No candidates returned from API"
       });
     }
 
     const reply = data.candidates[0]?.content?.parts?.[0]?.text;
     if (!reply) {
-      const friendlyMsg = "🤖 L'AI khaso yerta7 chwia. 3awed jarrab ba3d da9i9a.";
-      console.error(`❌ Gemini API returned empty text in candidate:`, data.candidates[0]);
+      console.error(`\n❌ [API ERROR] Empty text in candidate:`);
+      console.error(JSON.stringify(data.candidates[0], null, 2));
+      // DEBUGGING: Return actual error message
+      const debugMsg = getFriendlyErrorMessage({ message: "No text content in response" }, true);
       return res.status(200).json({ 
         success: false, 
-        message: friendlyMsg,
-        reply: friendlyMsg
+        message: debugMsg,
+        reply: debugMsg,
+        debugError: "No text content in candidate response"
       });
     }
 
-    console.log(`✅ [CHAT] Reply: "${reply.substring(0, 100)}..."`);
+    console.log(`✅ [CHAT] Success! Reply: "${reply.substring(0, 100)}..."`);
     
     // 3️⃣ SAVE AI RESPONSE TO MEMORY
     memoryStore.addAIMessage(session, reply);
-    
+
     res.json({ 
       success: true,
       reply, 
@@ -390,12 +433,29 @@ app.post("/api/chat", async (req, res) => {
     });
 
   } catch (err) {
-    const friendlyMsg = getFriendlyErrorMessage(err);
-    console.error(`❌ CHAT ERROR:`, err.message);
+    // COMPREHENSIVE ERROR LOGGING
+    console.error(`\n${'═'.repeat(80)}`);
+    console.error(`❌ [CHAT ENDPOINT ERROR]`);
+    console.error(`${'═'.repeat(80)}`);
+    console.error(`Error Name: ${err.name}`);
+    console.error(`Error Message: ${err.message}`);
+    console.error(`Error Code: ${err.code}`);
+    console.error(`Full Error Object:`, JSON.stringify(err, null, 2));
+    console.error(`Stack Trace:`, err.stack);
+    console.error(`${'═'.repeat(80)}\n`);
+    
+    // DEBUGGING: Return actual error message
+    const debugMsg = getFriendlyErrorMessage(err, true);
     res.status(200).json({ 
       success: false, 
-      message: friendlyMsg,
-      reply: friendlyMsg
+      message: debugMsg,
+      reply: debugMsg,
+      debugError: {
+        name: err.name,
+        message: err.message,
+        code: err.code,
+        stack: err.stack?.split('\n')[0]
+      }
     });
   }
 });
