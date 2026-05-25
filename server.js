@@ -633,7 +633,7 @@ app.post("/api/chat/stream", async (req, res) => {
     console.log(`🔑 [STREAM] GEMINI_API_KEY present: ${apiKey ? "✅ YES (len: " + apiKey.length + ", prefix: " + apiKey.substring(0,4) + ")" : "❌ MISSING"}`);
     if (!apiKey) {
       console.error("❌ FATAL: GEMINI_API_KEY is not configured");
-      res.status(500).json({ success: false, reply: GENERIC_FRIENDLY_ERROR });
+      res.status(500).json({ success: false, reply: "DEBUG ERROR: GEMINI_API_KEY is missing in Vercel Environment Variables." });
       return;
     }
 
@@ -848,9 +848,9 @@ app.post("/api/chat/stream", async (req, res) => {
     if (fullReply === null) {
       console.error("❌ [STREAM] All models failed — no reply obtained");
       if (!res.headersSent) {
-        res.status(500).json({ success: false, reply: GENERIC_FRIENDLY_ERROR });
+        res.status(500).json({ success: false, reply: "DEBUG ERROR: All Gemini models failed to return a valid response." });
       } else {
-        try { sseSend({ error: true, message: GENERIC_FRIENDLY_ERROR }); sseSend({ done: true, fullText: GENERIC_FRIENDLY_ERROR }); sseEnd(); } catch {}
+        try { sseSend({ error: true, message: "DEBUG ERROR: All Gemini models failed to return a valid response." }); sseSend({ done: true, fullText: "DEBUG ERROR: All models failed." }); sseEnd(); } catch {}
       }
       return;
     }
@@ -873,10 +873,10 @@ app.post("/api/chat/stream", async (req, res) => {
     categorizeError(err, 'stream-endpoint');
     try {
       if (!res.headersSent) {
-        res.status(500).json({ success: false, reply: GENERIC_FRIENDLY_ERROR });
+        res.status(500).json({ success: false, reply: `DEBUG CATASTROPHIC ERROR: ${err.message}` });
       } else if (!res.writableEnded) {
-        res.write(`data: ${JSON.stringify({ error: true, message: GENERIC_FRIENDLY_ERROR })}\n\n`);
-        res.write(`data: ${JSON.stringify({ done: true, fullText: GENERIC_FRIENDLY_ERROR })}\n\n`);
+        res.write(`data: ${JSON.stringify({ error: true, message: `DEBUG CATASTROPHIC ERROR: ${err.message}` })}\n\n`);
+        res.write(`data: ${JSON.stringify({ done: true, fullText: `DEBUG CATASTROPHIC ERROR: ${err.message}` })}\n\n`);
         res.end();
       }
     } catch (finalErr) {

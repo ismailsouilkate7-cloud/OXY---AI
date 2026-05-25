@@ -843,7 +843,7 @@ async function sendMessage() {
 
     if (!response.ok) {
       const errData = await response.json().catch(() => ({}));
-      const fallback = "I'm a bit busy right now, but I'm still here to help you 😊";
+      const fallback = `DEBUG ERROR: Server returned HTTP ${response.status} ${response.statusText}. Check Vercel logs.`;
       fullReply = errData.reply || fallback;
 
       const msgIndex = messages.findIndex(m => m.id === streamMessageId);
@@ -966,7 +966,7 @@ async function sendMessage() {
     console.error('Stream error:', err);
     
     if (!fullReply) {
-      fullReply = "I'm a bit busy right now, but I'm still here to help you 😊";
+      fullReply = `DEBUG FETCH ERROR: ${err.message}`;
     }
     updateStreamingMessage(streamMessageId, fullReply);
 
