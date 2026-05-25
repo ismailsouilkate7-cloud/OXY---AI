@@ -1,22 +1,16 @@
 {
   "version": 2,
-  "builds": [
+  "rewrites": [
     {
-      "src": "server.js",
-      "use": "@vercel/node",
-      "config": {
-        "includeFiles": ["public/**"]
-      }
+      "source": "/(.*)",
+      "destination": "/server.js"
     }
-  ],
-  "routes": [
-    { "src": "/(.*)", "dest": "server.js" }
   ],
   "functions": {
     "server.js": {
       "memory": 300,
       "maxDuration": 30,
-      "supportsResponseStreaming": true
+      "includeFiles": "public/**"
     }
   }
 }
