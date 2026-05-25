@@ -1242,22 +1242,46 @@ app.get("/health", (req, res) => {
 /* ═══════════════════════════════════════════════════════════════
    START
 ═══════════════════════════════════════════════════════════════ */
-const PORT = process.env.PORT || 5173;
-
 // Only self-start when NOT running on Vercel (Vercel uses export default)
 if (!process.env.VERCEL) {
-  async function startServer() {
-    app.listen(PORT, () => {
-      console.log(`\n🚀 OXY AI running on port ${PORT}`);
-      console.log(`   Local: http://localhost:${PORT}`);
-      console.log(`   API:   http://localhost:${PORT}/api\n`);
+  const defaultPort = process.env.PORT ? parseInt(process.env.PORT, 10) : 5173;
+  const fallbackPorts = [3100, 5174, 8080, 8081];
+  
+  // Create a unique list of ports to try, starting with the default port
+  const portsToTry = [...new Set([defaultPort, ...fallbackPorts])];
+  let portIndex = 0;
+
+  function startServer() {
+    const port = portsToTry[portIndex];
+    
+    const server = app.listen(port, () => {
+      if (portIndex > 0) {
+        console.log(`✅ Automatically switched to port ${port} because previous ports were in use.`);
+      }
+      console.log(`\n🚀 OXY AI running on port ${port}`);
+      console.log(`   Local: http://localhost:${port}`);
+      console.log(`   API:   http://localhost:${port}/api\n`);
+    });
+
+    server.on('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        console.warn(`⚠️  Port ${port} is already in use.`);
+        portIndex++;
+        if (portIndex < portsToTry.length) {
+          console.log(`🔄 Trying fallback port ${portsToTry[portIndex]}...`);
+          startServer();
+        } else {
+          console.error("❌ [STARTUP] All fallback ports are in use. Please free a port or specify a different PORT environment variable.");
+          process.exit(1);
+        }
+      } else {
+        console.error("❌ [STARTUP] Failed to start server:", err.message);
+        process.exit(1);
+      }
     });
   }
 
-  startServer().catch((err) => {
-    console.error("❌ [STARTUP] Failed to start server:", err.message);
-    process.exit(1);
-  });
+  startServer();
 }
 
 // ─── Vercel serverless export ────────────────────────────────

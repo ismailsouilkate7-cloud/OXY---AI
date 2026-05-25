@@ -1186,10 +1186,10 @@ function addTypingIndicator() {
       <img src="/logo.svg" alt="OXY" style="width:22px;height:22px;display:block" />
     </div>
     <div class="message-bubble ai-bubble">
-      <div class="typing-indicator">
-        <div class="typing-dot"></div>
-        <div class="typing-dot"></div>
-        <div class="typing-dot"></div>
+      <div class="typing-indicator" role="status" aria-label="AI is thinking">
+        <div class="typing-bar"></div>
+        <div class="typing-bar"></div>
+        <div class="typing-bar"></div>
       </div>
     </div>`;
   chatContainer.appendChild(row);

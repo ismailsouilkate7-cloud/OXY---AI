@@ -647,28 +647,31 @@ body {
   border-radius: var(--radius-md);
 }
 
-/* ─── Typing indicator ───────────────────────────────────────── */
+/* ─── Modern Typing indicator (Wave Bars) ──────────────────────── */
 .typing-indicator {
   display: flex;
   align-items: center;
   gap: 5px;
-  padding: 8px 0;
+  padding: 6px 2px;
+  height: 20px;
 }
 
-.typing-dot {
-  width: 8px;
-  height: 8px;
-  background: var(--text-muted);
-  border-radius: 50%;
-  animation: typingBounce 1.2s ease-in-out infinite;
+.typing-bar {
+  width: 5px;
+  height: 100%;
+  background: linear-gradient(135deg, var(--accent) 0%, rgba(16, 163, 127, 0.5) 100%);
+  border-radius: 4px;
+  animation: waveBar 1.1s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  transform-origin: center;
 }
 
-.typing-dot:nth-child(2) { animation-delay: 0.2s; }
-.typing-dot:nth-child(3) { animation-delay: 0.4s; }
+.typing-bar:nth-child(1) { animation-delay: 0.0s; }
+.typing-bar:nth-child(2) { animation-delay: 0.15s; }
+.typing-bar:nth-child(3) { animation-delay: 0.3s; }
 
-@keyframes typingBounce {
-  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
-  30% { transform: translateY(-6px); opacity: 1; }
+@keyframes waveBar {
+  0%, 100% { transform: scaleY(0.4); opacity: 0.4; }
+  50% { transform: scaleY(1.1); opacity: 1; box-shadow: 0 0 10px rgba(16, 163, 127, 0.4); }
 }
 
 /* ═══════════════════════════════════════════════════════════════
