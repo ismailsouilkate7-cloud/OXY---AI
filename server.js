@@ -7,7 +7,7 @@ import fs from "fs";
 import multer from "multer";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import rateLimit from "express-rate-limit";
-import memoryStore from "./memoryStore.js";
+import ConversationService from "./conversationService.js";
 
 dotenv.config();
 
@@ -258,29 +258,48 @@ app.use((err, req, res, next) => {
 });
 
 /* ═══════════════════════════════════════════════════════════════
-   CHAT API — WITH PERSISTENT MEMORY & DEBUGGING
+   CHAT API — WITH DATABASE PERSISTENCE
 ═══════════════════════════════════════════════════════════════ */
 app.post("/api/chat", async (req, res) => {
   try {
-    const { message, imageUrl, sessionId } = req.body;
+    const { message, imageUrl, userId, conversationId } = req.body;
 
     if (!message || message.trim() === "") {
       return res.status(400).json({ error: "Message cannot be empty" });
     }
 
-    // Generate sessionId if not provided (for persistent user sessions)
-    const session = sessionId || `session_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-    console.log(`\n📨 [CHAT] Session: ${session} | Message: "${message.substring(0, 50)}${message.length > 50 ? '...' : ''}"${imageUrl ? ` | Image: ${imageUrl}` : ''}`);
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
+    }
 
-    // 1️⃣ LOAD PREVIOUS MESSAGES FROM MEMORY
-    const previousMessages = memoryStore.getLastMessages(session, 10);
-    console.log(`📚 [MEMORY] Loaded ${previousMessages.length} previous messages for context`);
+    // Generate or use provided conversationId
+    let activeConversationId = conversationId;
+    if (!activeConversationId) {
+      console.log(`\n🆕 [CHAT] Creating new conversation for user: ${userId}`);
+      const conversation = await ConversationService.createConversation(userId);
+      activeConversationId = conversation.conversation_id;
+    }
 
-    // 2️⃣ ADD CURRENT USER MESSAGE TO MEMORY
-    memoryStore.addUserMessage(session, message);
+    console.log(
+      `\n📨 [CHAT] Session: ${activeConversationId} | User: ${userId} | Message: "${message.substring(0, 50)}${message.length > 50 ? "..." : ""}"${imageUrl ? ` | Image: ${imageUrl}` : ""}`
+    );
+
+    // 1️⃣ LOAD PREVIOUS MESSAGES FROM DATABASE
+    const previousMessages = await ConversationService.getLastMessages(
+      activeConversationId,
+      10
+    );
+    console.log(
+      `📚 [MEMORY] Loaded ${previousMessages.length} previous messages for context`
+    );
+
+    // 2️⃣ ADD CURRENT USER MESSAGE TO DATABASE
+    await ConversationService.addMessage(activeConversationId, "user", message);
 
     const apiKey = process.env.GEMINI_API_KEY;
-    console.log(`🔑 [API KEY CHECK] GEMINI_API_KEY present: ${apiKey ? '✅ YES' : '❌ MISSING'}`);
+    console.log(
+      `🔑 [API KEY CHECK] GEMINI_API_KEY present: ${apiKey ? "✅ YES" : "❌ MISSING"}`
+    );
     if (!apiKey) {
       const errorMsg = "❌ FATAL: GEMINI_API_KEY is not configured";
       console.error(errorMsg);
@@ -292,45 +311,63 @@ app.post("/api/chat", async (req, res) => {
       try {
         console.log(`🖼️  [IMAGE PROCESSING] Reading image from: ${imageUrl}`);
         const { base64, mimeType } = readImageFile(imageUrl);
-        console.log(`✅ [IMAGE LOADED] MIME type: ${mimeType}, Size: ${(base64.length / 1024).toFixed(2)}KB`);
-        
+        console.log(
+          `✅ [IMAGE LOADED] MIME type: ${mimeType}, Size: ${(base64.length / 1024).toFixed(2)}KB`
+        );
+
         // Build content array with memory context + current message + image
         const contentParts = [];
-        
+
         // Add system prompt
         contentParts.push({ text: SYSTEM_PROMPT });
-        
+
         // Add conversation history for context
         if (previousMessages.length > 0) {
           const historyText = previousMessages
-            .map(msg => `${msg.role === 'user' ? '👤 User' : '🤖 Assistant'}: ${msg.content}`)
-            .join('\n\n');
-          contentParts.push({ text: `\n\nPrevious conversation:\n${historyText}\n\nCurrent user message:` });
+            .map(
+              (msg) =>
+                `${msg.role === "user" ? "👤 User" : "🤖 Assistant"}: ${msg.content}`
+            )
+            .join("\n\n");
+          contentParts.push({
+            text: `\n\nPrevious conversation:\n${historyText}\n\nCurrent user message:`,
+          });
         }
-        
+
         // Add current message and image
         contentParts.push({ text: message });
         contentParts.push({ inlineData: { mimeType, data: base64 } });
-        
+
         const modelName = "gemini-2.5-flash";
         console.log(`🤖 [MODEL SELECTED] ${modelName}`);
-        console.log(`📤 [REQUEST] Image chat with ${contentParts.length} content parts`);
+        console.log(
+          `📤 [REQUEST] Image chat with ${contentParts.length} content parts`
+        );
         const model = genAI.getGenerativeModel({ model: modelName });
-        
-        console.log(`⏳ [API CALL] Sending request to Gemini API (image mode)...`);
+
+        console.log(
+          `⏳ [API CALL] Sending request to Gemini API (image mode)...`
+        );
         const result = await model.generateContent(contentParts);
         console.log(`📬 [API RESPONSE] Received response from Gemini API`);
         const reply = result.response.text();
-        
-        console.log(`✅ [CHAT+IMAGE] Success! Reply: "${reply.substring(0, 100)}..."`);
-        
-        // 3️⃣ SAVE AI RESPONSE TO MEMORY
-        memoryStore.addAIMessage(session, reply);
-        
-        return res.json({ 
-          reply, 
-          sessionId: session,
-          messagesCount: previousMessages.length + 2 // user + assistant
+
+        console.log(
+          `✅ [CHAT+IMAGE] Success! Reply: "${reply.substring(0, 100)}..."`
+        );
+
+        // 3️⃣ SAVE AI RESPONSE TO DATABASE
+        await ConversationService.addMessage(
+          activeConversationId,
+          "assistant",
+          reply
+        );
+
+        return res.json({
+          reply,
+          conversationId: activeConversationId,
+          userId: userId,
+          messagesCount: previousMessages.length + 2, // user + assistant
         });
       } catch (imgErr) {
         console.error(`\n⚠️  [IMAGE ERROR] ${imgErr.message}`);
@@ -339,44 +376,52 @@ app.post("/api/chat", async (req, res) => {
       }
     }
 
-    // TEXT-ONLY CHAT PATH WITH MEMORY & DEBUG LOGGING
+    // TEXT-ONLY CHAT PATH WITH DATABASE & DEBUG LOGGING
     const modelName = "gemini-2.5-flash";
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
     console.log(`\n📝 [TEXT CHAT MODE]`);
     console.log(`🤖 [MODEL] ${modelName}`);
-    console.log(`🔗 [ENDPOINT] ${endpoint.replace(apiKey, '***API_KEY***')}`);
-    
+    console.log(
+      `🔗 [ENDPOINT] ${endpoint.replace(apiKey, "***API_KEY***")}`
+    );
+
     // Build request with conversation history
     const contents = [];
-    
+
     // Add previous messages as context
     for (const msg of previousMessages) {
-      if (msg.role === 'user') {
-        contents.push({ role: 'user', parts: [{ text: msg.content }] });
+      if (msg.role === "user") {
+        contents.push({ role: "user", parts: [{ text: msg.content }] });
       } else {
-        contents.push({ role: 'model', parts: [{ text: msg.content }] });
+        contents.push({ role: "model", parts: [{ text: msg.content }] });
       }
     }
-    
+
     // Add current user message
     contents.push({ parts: [{ text: message }] });
-    
+
     const requestBody = {
       system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
-      contents: contents
+      contents: contents,
     };
 
-    console.log(`📤 [REQUEST BODY] ${contents.length} total messages (${previousMessages.length} from memory + current)`);
+    console.log(
+      `📤 [REQUEST BODY] ${contents.length} total messages (${previousMessages.length} from memory + current)`
+    );
     console.log(`📤 [REQUEST PAYLOAD]`, JSON.stringify(requestBody, null, 2));
-    console.log(`⏳ [API CALL] Sending request to Gemini API (text mode)...`);
+    console.log(
+      `⏳ [API CALL] Sending request to Gemini API (text mode)...`
+    );
 
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(requestBody)
+      body: JSON.stringify(requestBody),
     });
 
-    console.log(`📬 [API RESPONSE] Status: ${response.status} ${response.statusText}`);
+    console.log(
+      `📬 [API RESPONSE] Status: ${response.status} ${response.statusText}`
+    );
     const data = await response.json();
     console.log(`📨 [RESPONSE BODY]`, JSON.stringify(data, null, 2));
 
@@ -385,11 +430,11 @@ app.post("/api/chat", async (req, res) => {
       console.error(JSON.stringify(data, null, 2));
       // DEBUGGING: Return actual error message
       const debugMsg = getFriendlyErrorMessage(data, true);
-      return res.status(200).json({ 
-        success: false, 
+      return res.status(200).json({
+        success: false,
         message: debugMsg,
         reply: debugMsg,
-        debugError: data?.error || data
+        debugError: data?.error || data,
       });
     }
 
@@ -398,11 +443,11 @@ app.post("/api/chat", async (req, res) => {
       console.error(JSON.stringify(data, null, 2));
       // DEBUGGING: Return actual error message
       const debugMsg = getFriendlyErrorMessage(data, true);
-      return res.status(200).json({ 
-        success: false, 
+      return res.status(200).json({
+        success: false,
         message: debugMsg,
         reply: debugMsg,
-        debugError: "No candidates returned from API"
+        debugError: "No candidates returned from API",
       });
     }
 
@@ -411,154 +456,253 @@ app.post("/api/chat", async (req, res) => {
       console.error(`\n❌ [API ERROR] Empty text in candidate:`);
       console.error(JSON.stringify(data.candidates[0], null, 2));
       // DEBUGGING: Return actual error message
-      const debugMsg = getFriendlyErrorMessage({ message: "No text content in response" }, true);
-      return res.status(200).json({ 
-        success: false, 
+      const debugMsg = getFriendlyErrorMessage(
+        { message: "No text content in response" },
+        true
+      );
+      return res.status(200).json({
+        success: false,
         message: debugMsg,
         reply: debugMsg,
-        debugError: "No text content in candidate response"
+        debugError: "No text content in candidate response",
       });
     }
 
-    console.log(`✅ [CHAT] Success! Reply: "${reply.substring(0, 100)}..."`);
-    
-    // 3️⃣ SAVE AI RESPONSE TO MEMORY
-    memoryStore.addAIMessage(session, reply);
+    console.log(
+      `✅ [CHAT] Success! Reply: "${reply.substring(0, 100)}..."`
+    );
 
-    res.json({ 
+    // 3️⃣ SAVE AI RESPONSE TO DATABASE
+    await ConversationService.addMessage(
+      activeConversationId,
+      "assistant",
+      reply
+    );
+
+    res.json({
       success: true,
-      reply, 
-      sessionId: session,
-      messagesCount: previousMessages.length + 2 // user + assistant
+      reply,
+      conversationId: activeConversationId,
+      userId: userId,
+      messagesCount: previousMessages.length + 2, // user + assistant
     });
-
   } catch (err) {
     // COMPREHENSIVE ERROR LOGGING
-    console.error(`\n${'═'.repeat(80)}`);
+    console.error(`\n${"═".repeat(80)}`);
     console.error(`❌ [CHAT ENDPOINT ERROR]`);
-    console.error(`${'═'.repeat(80)}`);
+    console.error(`${"═".repeat(80)}`);
     console.error(`Error Name: ${err.name}`);
     console.error(`Error Message: ${err.message}`);
     console.error(`Error Code: ${err.code}`);
     console.error(`Full Error Object:`, JSON.stringify(err, null, 2));
     console.error(`Stack Trace:`, err.stack);
-    console.error(`${'═'.repeat(80)}\n`);
-    
+    console.error(`${"═".repeat(80)}\n`);
+
     // DEBUGGING: Return actual error message
     const debugMsg = getFriendlyErrorMessage(err, true);
-    res.status(200).json({ 
-      success: false, 
+    res.status(200).json({
+      success: false,
       message: debugMsg,
       reply: debugMsg,
       debugError: {
         name: err.name,
         message: err.message,
         code: err.code,
-        stack: err.stack?.split('\n')[0]
-      }
+        stack: err.stack?.split("\n")[0],
+      },
     });
   }
 });
 
 /* ═══════════════════════════════════════════════════════════════
-   MEMORY MANAGEMENT API
+   CONVERSATION MANAGEMENT API
 ═══════════════════════════════════════════════════════════════ */
 
 /**
- * GET /api/memory/session/:sessionId
- * Retrieve all messages in a session
+ * POST /api/conversations
+ * Create a new conversation for a user
  */
-app.get("/api/memory/session/:sessionId", (req, res) => {
+app.post("/api/conversations", async (req, res) => {
   try {
-    const { sessionId } = req.params;
-    const session = memoryStore.getSessionInfo(sessionId);
-    
-    if (!session) {
-      return res.status(404).json({ error: "Session not found" });
+    const { userId, title } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: "userId is required" });
     }
-    
-    const fullSession = memoryStore.data[sessionId];
+
+    const conversation = await ConversationService.createConversation(
+      userId,
+      title || "New Conversation"
+    );
+
     res.json({
       success: true,
-      ...session,
-      messages: fullSession.messages
+      conversation,
     });
   } catch (err) {
-    res.status(500).json({ error: "Failed to retrieve session", message: err.message });
+    console.error(`❌ [API] Error creating conversation:`, err.message);
+    res.status(500).json({
+      error: "Failed to create conversation",
+      message: err.message,
+    });
   }
 });
 
 /**
- * GET /api/memory/history/:sessionId
- * Get last N messages from a session (shorter endpoint)
+ * GET /api/conversations/:conversationId
+ * Get a conversation with its messages
  */
-app.get("/api/memory/history/:sessionId", (req, res) => {
+app.get("/api/conversations/:conversationId", async (req, res) => {
   try {
-    const { sessionId } = req.params;
-    const count = parseInt(req.query.count) || 10;
-    
-    const messages = memoryStore.getLastMessages(sessionId, count);
-    
+    const { conversationId } = req.params;
+
+    const conversation = await ConversationService.getConversationFull(
+      conversationId
+    );
+
+    if (!conversation) {
+      return res.status(404).json({ error: "Conversation not found" });
+    }
+
     res.json({
       success: true,
-      sessionId,
+      conversation,
+    });
+  } catch (err) {
+    console.error(`❌ [API] Error fetching conversation:`, err.message);
+    res.status(500).json({
+      error: "Failed to fetch conversation",
+      message: err.message,
+    });
+  }
+});
+
+/**
+ * GET /api/users/:userId/conversations
+ * Get all conversations for a user
+ */
+app.get("/api/users/:userId/conversations", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const limit = parseInt(req.query.limit) || 50;
+
+    const conversations = await ConversationService.getUserConversations(
+      userId,
+      limit
+    );
+
+    res.json({
+      success: true,
+      userId,
+      conversationCount: conversations.length,
+      conversations,
+    });
+  } catch (err) {
+    console.error(`❌ [API] Error fetching user conversations:`, err.message);
+    res.status(500).json({
+      error: "Failed to fetch conversations",
+      message: err.message,
+    });
+  }
+});
+
+/**
+ * GET /api/conversations/:conversationId/messages
+ * Get messages from a conversation
+ */
+app.get("/api/conversations/:conversationId/messages", async (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const limit = parseInt(req.query.limit) || 0;
+
+    const messages = await ConversationService.getConversationMessages(
+      conversationId,
+      limit
+    );
+
+    res.json({
+      success: true,
+      conversationId,
       messageCount: messages.length,
-      messages
+      messages,
     });
   } catch (err) {
-    res.status(500).json({ error: "Failed to retrieve history", message: err.message });
+    console.error(`❌ [API] Error fetching messages:`, err.message);
+    res.status(500).json({
+      error: "Failed to fetch messages",
+      message: err.message,
+    });
   }
 });
 
 /**
- * DELETE /api/memory/session/:sessionId
- * Delete a session and all its messages
+ * DELETE /api/conversations/:conversationId
+ * Delete a conversation and all its messages
  */
-app.delete("/api/memory/session/:sessionId", (req, res) => {
+app.delete("/api/conversations/:conversationId", async (req, res) => {
   try {
-    const { sessionId } = req.params;
-    memoryStore.deleteSession(sessionId);
-    
+    const { conversationId } = req.params;
+
+    const success = await ConversationService.deleteConversation(
+      conversationId
+    );
+
     res.json({
       success: true,
-      message: `Session ${sessionId} deleted`
+      message: `Conversation ${conversationId} deleted`,
     });
   } catch (err) {
-    res.status(500).json({ error: "Failed to delete session", message: err.message });
+    console.error(`❌ [API] Error deleting conversation:`, err.message);
+    res.status(500).json({
+      error: "Failed to delete conversation",
+      message: err.message,
+    });
   }
 });
 
 /**
- * POST /api/memory/clear/:sessionId
- * Clear all messages in a session (keep session metadata)
+ * POST /api/conversations/:conversationId/clear
+ * Clear all messages in a conversation (keep conversation metadata)
  */
-app.post("/api/memory/clear/:sessionId", (req, res) => {
+app.post("/api/conversations/:conversationId/clear", async (req, res) => {
   try {
-    const { sessionId } = req.params;
-    memoryStore.clearSessionMessages(sessionId);
-    
+    const { conversationId } = req.params;
+
+    const success = await ConversationService.clearConversationMessages(
+      conversationId
+    );
+
     res.json({
       success: true,
-      message: `Messages in session ${sessionId} cleared`
+      message: `Messages in conversation ${conversationId} cleared`,
     });
   } catch (err) {
-    res.status(500).json({ error: "Failed to clear session", message: err.message });
+    console.error(`❌ [API] Error clearing messages:`, err.message);
+    res.status(500).json({
+      error: "Failed to clear messages",
+      message: err.message,
+    });
   }
 });
 
 /**
- * GET /api/memory/stats
- * Get memory system statistics
+ * GET /api/stats
+ * Get database statistics
  */
-app.get("/api/memory/stats", (req, res) => {
+app.get("/api/stats", async (req, res) => {
   try {
-    const stats = memoryStore.getStats();
+    const stats = await ConversationService.getStats();
+
     res.json({
       success: true,
-      ...stats
+      ...stats,
     });
   } catch (err) {
-    res.status(500).json({ error: "Failed to get stats", message: err.message });
+    console.error(`❌ [API] Error fetching stats:`, err.message);
+    res.status(500).json({
+      error: "Failed to get stats",
+      message: err.message,
+    });
   }
 });
 
@@ -615,8 +759,26 @@ app.use((err, req, res, next) => {
    START
 ═══════════════════════════════════════════════════════════════ */
 const PORT = process.env.PORT || 5173;
-app.listen(PORT, () => {
-  console.log(`\n🚀 OXY AI running on port ${PORT}`);
-  console.log(`   Local: http://localhost:${PORT}`);
-  console.log(`   API:   http://localhost:${PORT}/api\n`);
+
+// Initialize database on startup
+async function startServer() {
+  try {
+    console.log("\n📋 [STARTUP] Initializing database...");
+    await ConversationService.initializeDatabase();
+    console.log("✅ [STARTUP] Database initialized successfully\n");
+  } catch (error) {
+    console.error("⚠️  [STARTUP] Database initialization warning:", error.message);
+    console.log("ℹ️  [STARTUP] Continuing anyway - tables may already exist\n");
+  }
+
+  app.listen(PORT, () => {
+    console.log(`\n🚀 OXY AI running on port ${PORT}`);
+    console.log(`   Local: http://localhost:${PORT}`);
+    console.log(`   API:   http://localhost:${PORT}/api\n`);
+  });
+}
+
+startServer().catch((err) => {
+  console.error("❌ [STARTUP] Failed to start server:", err.message);
+  process.exit(1);
 });
