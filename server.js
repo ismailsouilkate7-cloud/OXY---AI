@@ -89,7 +89,7 @@ const upload = multer({
 // IMPORTANT: Trust proxy BEFORE rate limiting middleware
 // This tells Express to trust X-Forwarded-For header from Vercel
 app.set('trust proxy', 1);
-app.use(cors());
+// app.use(cors()); // Disabled to prevent unauthorized external access to API routes
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 app.use(express.static(path.join(__dirname, "public")));
