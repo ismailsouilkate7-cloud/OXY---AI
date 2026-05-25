@@ -1013,7 +1013,7 @@ function renderMessage(messageData) {
   } else { // AI message
   row.innerHTML = `
     <div class="message-avatar">
-      <img src="/fox-logo.svg" alt="OXY" style="width:22px;height:22px;display:block" />
+      <img src="/logo.svg" alt="OXY" style="width:22px;height:22px;display:block" />
     </div>
       <div class="message-bubble ai-bubble">${parseAndRenderMarkdown(messageData.text)}</div>`;
   }
@@ -1196,7 +1196,7 @@ function addTypingIndicator() {
   row.style.animationDelay = '0s';
   row.innerHTML = `
     <div class="message-avatar">
-      <img src="/fox-logo.svg" alt="OXY" style="width:22px;height:22px;display:block" />
+      <img src="/logo.svg" alt="OXY" style="width:22px;height:22px;display:block" />
     </div>
     <div class="message-bubble ai-bubble">
       <div class="typing-indicator">
@@ -1482,3 +1482,16 @@ updateSendButton();
 
 // ─── Initialize conversation system on page load ──────────────
 initConversationSystem();
+
+// ====================
+// PWA SERVICE WORKER
+// ====================
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').then(registration => {
+      console.log('ServiceWorker registration successful with scope: ', registration.scope);
+    }).catch(err => {
+      console.log('ServiceWorker registration failed: ', err);
+    });
+  });
+}

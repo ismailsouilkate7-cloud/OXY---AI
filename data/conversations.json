@@ -851,5 +851,34 @@
     "profile": {},
     "createdAt": "2026-05-24T23:10:52.554Z",
     "lastActive": "2026-05-24T23:10:52.568Z"
+  },
+  "session_conv_1779664283703_maks89r_1779713422359": {
+    "messages": [
+      {
+        "role": "user",
+        "content": "Salam",
+        "timestamp": "2026-05-25T12:50:34.604Z"
+      }
+    ],
+    "profile": {},
+    "createdAt": "2026-05-25T12:50:34.591Z",
+    "lastActive": "2026-05-25T12:50:34.604Z"
+  },
+  "session_1779713610578_z8gcag": {
+    "messages": [
+      {
+        "role": "user",
+        "content": "Salam",
+        "timestamp": "2026-05-25T12:53:34.226Z"
+      },
+      {
+        "role": "model",
+        "content": "Ahlan! Labas 3lik? Ça va? 😊",
+        "timestamp": "2026-05-25T12:53:36.777Z"
+      }
+    ],
+    "profile": {},
+    "createdAt": "2026-05-25T12:53:33.928Z",
+    "lastActive": "2026-05-25T12:53:36.778Z"
   }
 }
