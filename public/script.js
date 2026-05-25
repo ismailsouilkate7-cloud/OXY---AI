@@ -771,11 +771,11 @@ async function uploadImage() {
       body: formData
     });
 
-    const data = await response.json();
+  const data = await response.json();
 
-    if (!response.ok || !data.success) {
-      throw new Error(data.message || 'Upload failed');
-    }
+  if (!response.ok || !data.success) {
+    throw new Error(data.message || 'Upload failed. Please try again.');
+  }
 
     uploadedImageUrl = data.imageUrl; // data URI for preview
     uploadedImageId = data.imageId;   // server-side ID for chat
@@ -910,15 +910,25 @@ async function sendMessage() {
     if (typingEl) typingEl.remove();
 
     // Check for both HTTP errors and application-level errors
+    // HTTP errors (network level) - show generic message
     if (!response.ok) {
-      addErrorMessage('🤖 L\'AI khaso yerta7 chwia. 3awed jarrab ba3d da9i9a.');
+      const aiMessage = { id: generateMessageId(), text: "OXY is resting right now 😴, please try again in a few seconds.", sender: 'ai' };
+      addNewMessageToChat(aiMessage);
+      conversationHistory.push(aiMessage);
+      
+      if (currentConversation) {
+        currentConversation.messages = JSON.parse(JSON.stringify(conversationHistory));
+        saveMessagesToConversation();
+      }
+      
       unlockRequest();
       return;
     }
 
     // Application-level error with friendly message
     if (data.success === false) {
-      const aiMessage = { id: generateMessageId(), text: data.reply || '🤖 L\'AI khaso yerta7 chwia. 3awed jarrab ba3d da9i9a.', sender: 'ai' };
+      const replyText = data.reply || "OXY is resting right now 😴, please try again in a few seconds.";
+      const aiMessage = { id: generateMessageId(), text: replyText, sender: 'ai' };
       addNewMessageToChat(aiMessage);
       conversationHistory.push(aiMessage);
       
@@ -954,7 +964,9 @@ async function sendMessage() {
 
   } catch (err) {
     if (typingEl) typingEl.remove();
-    addErrorMessage(err.message);
+    const aiMessage = { id: generateMessageId(), text: "OXY is resting right now 😴, please try again in a few seconds.", sender: 'ai' };
+    addNewMessageToChat(aiMessage);
+    conversationHistory.push(aiMessage);
     
     // Save even on error so messages aren't lost
     if (currentConversation) {

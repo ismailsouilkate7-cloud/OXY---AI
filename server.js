@@ -3,11 +3,10 @@ import cors from "cors";
 import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
-import fs from "fs";
 import multer from "multer";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import rateLimit from "express-rate-limit";
-import memoryStore from "./memoryStore.js"; // Changed from ConversationService
+import memoryStore from "./memoryStore.js";
 dotenv.config();
 
 // ─── System Prompt ────────────────────────────────────────────────────────────
@@ -26,8 +25,8 @@ kfch khasek tkon :
 
 2. IMPORTANT:
    - NEVER start by introducing yourself
-   - NEVER say “I am an AI” or explain who you are
-   - Don’t repeat system or identity information
+   - NEVER say "I am an AI" or explain who you are
+   - Don't repeat system or identity information
    - Go مباشرة للجواب
 
 3. STRUCTURE:
@@ -40,8 +39,8 @@ kfch khasek tkon :
    - Keep it simple and natural
 
 5. BEHAVIOR:
-   - Don’t become formal or preachy
-   - Don’t refuse normal conversational tone
+   - Don't become formal or preachy
+   - Don't refuse normal conversational tone
    - Stay relaxed even in spicy conversations
    - Avoid moral lectures unless user explicitly asks
 
@@ -53,6 +52,35 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const app = express();
+
+// ─── CORS ──────────────────────────────────────────────────────────────────────
+// Allow requests from the deployed frontend or local dev server
+const allowedOrigins = [
+  'https://oxy-ai.vercel.app',
+  'https://oxy-ai-ismailsouilkate7-clouds-projects.vercel.app',
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:3000',
+];
+
+app.use(cors({
+  origin: function (origin, callback) {
+    // Allow requests with no origin (mobile apps, curl, etc.)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) !== -1) {
+      callback(null, true);
+    } else {
+      // In production block unknown origins; in dev allow all
+      if (process.env.NODE_ENV !== 'production') {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    }
+  },
+  credentials: true,
+}));
 
 // ─── In-Memory Image Store (Vercel-compatible, no filesystem writes) ──────────
 const imageStore = new Map(); // key: imageId, value: { base64, mimeType, originalName, uploadedAt }
@@ -88,7 +116,6 @@ const upload = multer({
 // IMPORTANT: Trust proxy BEFORE rate limiting middleware
 // This tells Express to trust X-Forwarded-For header from Vercel
 app.set('trust proxy', 1);
-// app.use(cors()); // Disabled to prevent unauthorized external access to API routes
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 app.use(express.static(path.join(__dirname, "public")));
@@ -109,8 +136,8 @@ const apiLimiter = rateLimit({
   skip: (req, res) => req.path === '/health',
   message: {
     success: false,
-    error: "rate_limited",
-    message: "Too many requests, please wait a moment before sending another message."
+    error: "resting",
+    message: "OXY is resting right now 😴, please try again in a few seconds."
   }
 });
 
@@ -123,74 +150,39 @@ app.use("/api/upload", apiLimiter);
 app.use((err, req, res, next) => {
   if (err && err.name === 'RateLimitError') {
     console.warn(`⛔ RATE LIMITED: ${req.ip} on ${req.path}`);
+    // Return only the friendly message — no error details exposed to user
     return res.status(429).json({
       success: false,
-      error: "rate_limited",
-      message: "Too many requests, please wait a moment."
+      reply: "OXY is resting right now 😴, please try again in a few seconds."
     });
   }
   next(err);
 });
 
-// ─── Friendly error messages for Gemini API errors ────────────────────────────
-const FRIENDLY_ERRORS = {
-  '429': "🤖 Service temporairement saturé. 3awed jarrab ba3d chwia.",
-  'quota': "🤖 lAI khaso yerta7 daba. Sbar chwia w 3awed jarrab.",
-  'rate limit': "🤖 Kayn pressure 3la lservice daba. 3awed jarrab ba3d chwia.",
-  'billing': "🤖 Problem f billing dyal API. Tchecki account dyalek.",
-  'resource exhausted': "🤖 L’Ai khdam bzzaf daba. Sbar chwia.",
-  'forbidden': "🤖 Access mmanou3. Tchecki ... key dyalek.",
-  'default': "🤖 Service temporarily unavailable. 3awed jarrab ba3d chwia."
-};
+// ─── ALWAYS return this friendly message on ANY Gemini/API error ────────────
+// No quota, rate limit, debug info, stack traces, or provider details ever shown to users.
+const GENERIC_FRIENDLY_ERROR = "OXY is resting right now 😴, please try again in a few seconds.";
 
-// ─── ENHANCED ERROR HANDLER WITH DEBUGGING ──────────────────────────────────
-function getFriendlyErrorMessage(error, includeDebugInfo = false) {
-  const errorStr =
-    typeof error === "string"
-      ? error
-      : (error?.message || error?.error?.message || JSON.stringify(error || ""));
-
-  const lower = errorStr.toLowerCase();
+/**
+ * Logs full error details server-side only.
+ * Returns a generic friendly message — NO error details, provider names, or status codes.
+ */
+function handleApiError(error, context = '') {
+  // Server-side logging with full details (for debugging)
+  const errorStr = typeof error === "string" ? error : (error?.message || error?.error?.message || JSON.stringify(error || ""));
   const statusCode = error?.status || error?.statusCode;
   const stack = error?.stack || "No stack trace";
 
-  // COMPREHENSIVE ERROR LOGGING
   console.error("\n" + "=".repeat(80));
-  console.error("❌ [GEMINI API ERROR]");
+  console.error(`❌ [API ERROR]${context ? ' [' + context + ']' : ''}`);
   console.error("=".repeat(80));
   console.error("Error Message:", errorStr);
   console.error("Status Code:", statusCode);
-  console.error("Error Object:", JSON.stringify(error, null, 2));
   console.error("Stack Trace:", stack);
   console.error("=".repeat(80) + "\n");
 
-  // DEBUGGING MODE: Return actual error
-  if (includeDebugInfo) {
-    return `[DEBUG] ${statusCode || 'UNKNOWN'} - ${errorStr} | Stack: ${stack.split('\n')[1] || 'N/A'}`;
-  }
-
-  // PRIORITY 1: HTTP status codes
-  if (statusCode === 429) {
-    return FRIENDLY_ERRORS['429'];
-  }
-
-  if (statusCode === 403) {
-    return FRIENDLY_ERRORS['forbidden'];
-  }
-
-  if (statusCode >= 500) {
-    return "🤖 Server mouchkil daba. 3awed jarrab ba3d chwia.";
-  }
-
-  // PRIORITY 2: message keywords
-  if (lower.includes("quota")) return FRIENDLY_ERRORS['quota'];
-  if (lower.includes("rate limit")) return FRIENDLY_ERRORS['rate limit'];
-  if (lower.includes("billing")) return FRIENDLY_ERRORS['billing'];
-  if (lower.includes("resource exhausted")) return FRIENDLY_ERRORS['resource exhausted'];
-  if (lower.includes("forbidden")) return FRIENDLY_ERRORS['forbidden'];
-
-  // FINAL fallback (IMPORTANT FIX)
-  return "🤖 Kayn mouchkil temporary f service. 3awed jarrab.";
+  // NEVER return debug info to the client — always return the generic friendly message
+  return GENERIC_FRIENDLY_ERROR;
 }
 
 // ─── Helper: get image from in-memory store ───────────────────────────────────
@@ -244,7 +236,7 @@ app.post("/api/upload", upload.single("image"), (req, res) => {
     });
   } catch (err) {
     console.error(`❌ UPLOAD ERROR: ${err.message}`);
-    res.status(500).json({ success: false, error: "Upload failed", message: err.message });
+    res.status(500).json({ success: false, error: "Upload failed", message: handleApiError(err, 'upload') });
   }
 });
 
@@ -296,9 +288,11 @@ app.post("/api/chat", async (req, res) => {
       `🔑 [API KEY CHECK] GEMINI_API_KEY present: ${apiKey ? "✅ YES" : "❌ MISSING"}`
     );
     if (!apiKey) {
-      const errorMsg = "❌ FATAL: GEMINI_API_KEY is not configured";
-      console.error(errorMsg);
-      return res.status(500).json({ error: "Server Error", message: errorMsg });
+      console.error("❌ FATAL: GEMINI_API_KEY is not configured");
+      return res.status(500).json({
+        success: false,
+        reply: GENERIC_FRIENDLY_ERROR
+      });
     }
 
     // Handle image if provided (from in-memory store)
@@ -333,7 +327,7 @@ app.post("/api/chat", async (req, res) => {
         contentParts.push({ text: message });
         contentParts.push({ inlineData: { mimeType, data: base64 } });
 
-        const modelName = "gemini-2.5-flash";
+        const modelName = "gemini-2.0-flash";
         console.log(`🤖 [MODEL SELECTED] ${modelName}`);
         console.log(
           `📤 [REQUEST] Image chat with ${contentParts.length} content parts`
@@ -358,19 +352,22 @@ app.post("/api/chat", async (req, res) => {
         );
 
         return res.json({
+          success: true,
           reply,
           sessionId: sessionId,
           messagesCount: previousMessages.length + 2, // user + assistant
         });
       } catch (imgErr) {
+        // Log full error server-side only
         console.error(`\n⚠️  [IMAGE ERROR] ${imgErr.message}`);
         console.error(`Stack: ${imgErr.stack}`);
         console.error(`Falling back to text-only mode...\n`);
+        // Continue to text-only fallback below — but don't expose the error to the user
       }
     }
 
     // TEXT-ONLY CHAT PATH WITH MEMORYSTORE & DEBUG LOGGING
-    const modelName = "gemini-2.5-flash";
+    const modelName = "gemini-2.0-flash";
     const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
     console.log(`\n📝 [TEXT CHAT MODE]`);
     console.log(`🤖 [MODEL] ${modelName}`);
@@ -418,29 +415,24 @@ app.post("/api/chat", async (req, res) => {
     const data = await response.json();
     console.log(`📨 [RESPONSE BODY]`, JSON.stringify(data, null, 2));
 
+    // If Gemini API returned an error (HTTP error, quota, rate limit, etc.)
+    // Log everything server-side, return only friendly message to user
     if (!response.ok) {
       console.error(`\n❌ [API ERROR] HTTP ${response.status} Response:`);
       console.error(JSON.stringify(data, null, 2));
-      // DEBUGGING: Return actual error message
-      const debugMsg = getFriendlyErrorMessage(data, true);
-      return res.status(200).json({
+      // Return ONLY the generic friendly message — NO error details exposed
+      return res.json({
         success: false,
-        message: debugMsg,
-        reply: debugMsg,
-        debugError: data?.error || data,
+        reply: GENERIC_FRIENDLY_ERROR
       });
     }
 
     if (!data.candidates || data.candidates.length === 0) {
       console.error(`\n❌ [API ERROR] No candidates in response:`);
       console.error(JSON.stringify(data, null, 2));
-      // DEBUGGING: Return actual error message
-      const debugMsg = getFriendlyErrorMessage(data, true);
-      return res.status(200).json({
+      return res.json({
         success: false,
-        message: debugMsg,
-        reply: debugMsg,
-        debugError: "No candidates returned from API",
+        reply: GENERIC_FRIENDLY_ERROR
       });
     }
 
@@ -448,16 +440,9 @@ app.post("/api/chat", async (req, res) => {
     if (!reply) {
       console.error(`\n❌ [API ERROR] Empty text in candidate:`);
       console.error(JSON.stringify(data.candidates[0], null, 2));
-      // DEBUGGING: Return actual error message
-      const debugMsg = getFriendlyErrorMessage(
-        { message: "No text content in response" },
-        true
-      );
-      return res.status(200).json({
+      return res.json({
         success: false,
-        message: debugMsg,
-        reply: debugMsg,
-        debugError: "No text content in candidate response",
+        reply: GENERIC_FRIENDLY_ERROR
       });
     }
 
@@ -478,7 +463,7 @@ app.post("/api/chat", async (req, res) => {
       messagesCount: previousMessages.length + 2, // user + assistant
     });
   } catch (err) {
-    // COMPREHENSIVE ERROR LOGGING
+    // COMPREHENSIVE ERROR LOGGING — server-side only
     console.error(`\n${"═".repeat(80)}`);
     console.error(`❌ [CHAT ENDPOINT ERROR]`);
     console.error(`${"═".repeat(80)}`);
@@ -489,18 +474,10 @@ app.post("/api/chat", async (req, res) => {
     console.error(`Stack Trace:`, err.stack);
     console.error(`${"═".repeat(80)}\n`);
 
-    // DEBUGGING: Return actual error message
-    const debugMsg = getFriendlyErrorMessage(err, true);
-    res.status(200).json({
+    // Return ONLY the generic friendly message — NO debug info, stack traces, or provider details
+    res.json({
       success: false,
-      message: debugMsg,
-      reply: debugMsg,
-      debugError: {
-        name: err.name,
-        message: err.message,
-        code: err.code,
-        stack: err.stack?.split("\n")[0],
-      },
+      reply: GENERIC_FRIENDLY_ERROR
     });
   }
 });
@@ -641,35 +618,7 @@ app.get("/api/stats", (req, res) => {
     });
   }
 });
-/* ═══════════════════════════════════════════════════════════════
-   ANALYZE IMAGE
-═══════════════════════════════════════════════════════════════ */
-/*
-app.post("/api/analyze-image", async (req, res) => {
-  try {
-    const { imageUrl, question } = req.body;
-    if (!imageUrl) return res.status(400).json({ error: "imageUrl is required" });
 
-    const { base64, mimeType } = readImageFile(imageUrl);
-    const analysisQuestion = question || "What do you see in this image? Describe it in detail.";
-
-    const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
-    const response = await model.generateContent([
-      { inlineData: { mimeType, data: base64 } },
-      { text: analysisQuestion }
-    ]);
-
-    const analysis = response.response.text();
-    console.log(`✅ [ANALYZE] Complete`);
-
-    res.json({ success: true, imageUrl, question: analysisQuestion, analysis });
-  } catch (err) {
-    console.error(`❌ ANALYZE ERROR: ${err.message}`);
-    res.status(500).json({ error: "Failed to analyze image", message: err.message });
-  }
-});
-*/
-// Removed the /api/analyze-image route as image analysis is now integrated into /api/chat
 /* ═══════════════════════════════════════════════════════════════
    404 & ERROR HANDLING
 ═══════════════════════════════════════════════════════════════ */
@@ -686,7 +635,7 @@ app.use((req, res) => {
 
 app.use((err, req, res, next) => {
   console.error(`[ERROR] ${err.message}`);
-  res.status(500).json({ error: "Internal Server Error", message: err.message });
+  res.status(500).json({ error: "Internal Server Error", message: "An unexpected error occurred" });
 });
 
 /* ═══════════════════════════════════════════════════════════════
@@ -707,4 +656,3 @@ startServer().catch((err) => {
   console.error("❌ [STARTUP] Failed to start server:", err.message);
   process.exit(1);
 });
-

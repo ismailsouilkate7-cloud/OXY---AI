@@ -917,5 +917,22 @@
     "profile": {},
     "createdAt": "2026-05-25T13:26:44.852Z",
     "lastActive": "2026-05-25T13:28:41.878Z"
+  },
+  "session_conv_1779715737069_qgnfyvw_1779717228657": {
+    "messages": [
+      {
+        "role": "user",
+        "content": "salam",
+        "timestamp": "2026-05-25T13:53:55.311Z"
+      },
+      {
+        "role": "model",
+        "content": "Salam akhay/akhti! Labas 3lik? Kayen chi hedra? 😂",
+        "timestamp": "2026-05-25T13:53:57.794Z"
+      }
+    ],
+    "profile": {},
+    "createdAt": "2026-05-25T13:53:55.248Z",
+    "lastActive": "2026-05-25T13:53:57.794Z"
   }
 }

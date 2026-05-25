@@ -1,20 +1,17 @@
 /**
- * MemoryStore with simple JSON persistence.
- * Persists sessions and profile memory to data/conversations.json
+ * MemoryStore — Pure in-memory store (Vercel-compatible).
+ * No filesystem writes. No disk persistence.
+ * All sessions and messages exist only in memory for the lifetime of the server instance.
  */
 
-import fs from 'fs';
-import path from 'path';
-
 const MAX_MESSAGES_PER_SESSION = 20; // Keep last 20 messages for context
-const DATA_FILE = path.join(process.cwd(), 'data', 'conversations.json');
 
 class MemoryStore {
   constructor() {
     this.data = {}; // Stores sessions. Each session has: { messages: [], profile: {}, createdAt, lastActive }
     this.pruningInterval = null;
-    this._loadFromDisk();
     this.initPruning();
+    console.log('🧠 MEMORY: Pure in-memory store initialized (no disk I/O)');
   }
 
   // ─── Session Management ──────────────────────────────────────────────────
@@ -28,7 +25,6 @@ class MemoryStore {
         lastActive: new Date().toISOString(),
       };
       console.log(`🆕 MEMORY: Created session ${sessionId}`);
-      this._saveToDisk();
     }
     this.data[sessionId].lastActive = new Date().toISOString();
     return this.data[sessionId];
@@ -38,7 +34,6 @@ class MemoryStore {
     if (this.data[sessionId]) {
       delete this.data[sessionId];
       console.log(`🗑️ MEMORY: Deleted session ${sessionId}`);
-      this._saveToDisk();
       return true;
     }
     return false;
@@ -49,7 +44,6 @@ class MemoryStore {
       this.data[sessionId].messages = [];
       this.data[sessionId].lastActive = new Date().toISOString();
       console.log(`🧹 MEMORY: Cleared messages for session ${sessionId}`);
-      this._saveToDisk();
       return true;
     }
     return false;
@@ -79,7 +73,6 @@ class MemoryStore {
       session.messages = session.messages.slice(-MAX_MESSAGES_PER_SESSION);
     }
     session.lastActive = new Date().toISOString();
-    this._saveToDisk();
   }
 
   addUserMessage(sessionId, content) {
@@ -108,46 +101,16 @@ class MemoryStore {
     session.profile = Object.assign({}, session.profile || {}, updates);
     session.lastActive = new Date().toISOString();
     console.log(`🔧 MEMORY: Updated profile for ${sessionId}:`, updates);
-    this._saveToDisk();
     return session.profile;
   }
 
-  // ─── Persistence ─────────────────────────────────────────────────────
+  // ─── Convenience API methods ──────────────────────────────────────────────
 
-  _loadFromDisk() {
-    try {
-      if (!fs.existsSync(DATA_FILE)) {
-        // ensure data directory exists
-        const dir = path.dirname(DATA_FILE);
-        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-        fs.writeFileSync(DATA_FILE, JSON.stringify({}), 'utf8');
-      }
-      const raw = fs.readFileSync(DATA_FILE, 'utf8') || '{}';
-      const parsed = JSON.parse(raw || '{}');
-      this.data = parsed;
-      console.log(`💾 MEMORY: Loaded ${Object.keys(this.data).length} sessions from disk`);
-    } catch (err) {
-      console.error('❌ MEMORY: Failed to load from disk', err.message);
-      this.data = {};
-    }
-  }
-
-  _saveToDisk() {
-    try {
-      fs.writeFileSync(DATA_FILE, JSON.stringify(this.data, null, 2), 'utf8');
-      // console.log(`💾 MEMORY: Saved ${Object.keys(this.data).length} sessions to disk`);
-    } catch (err) {
-      console.error('❌ MEMORY: Failed to save to disk', err.message);
-    }
-  }
-
-  // Convenience API methods required by requirements
   saveMemory(sessionId) {
-    this._saveToDisk();
+    // No-op: all data is already in memory
   }
 
   loadMemory(sessionId) {
-    this._loadFromDisk();
     return this.getLastMessages(sessionId, MAX_MESSAGES_PER_SESSION);
   }
 
