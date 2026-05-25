@@ -54,41 +54,34 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const app = express();
 
-// ─── Directories ───────────────────────────────────────────────────────────────
-const uploadsDir = path.join(__dirname, "uploads");
-// const generatedDir = path.join(__dirname, "uploads", "generated"); // Removed image generation directory
+// ─── In-Memory Image Store (Vercel-compatible, no filesystem writes) ──────────
+const imageStore = new Map(); // key: imageId, value: { base64, mimeType, originalName, uploadedAt }
+const IMAGE_STORE_MAX_AGE = 30 * 60 * 1000; // 30 minutes
+const IMAGE_STORE_MAX_SIZE = 100; // max images in memory
 
-[uploadsDir].forEach(dir => { // Removed generatedDir from this loop
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true });
-    console.log(`📁 Created directory: ${dir}`);
+// Cleanup old images periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, img] of imageStore) {
+    if (now - img.uploadedAt > IMAGE_STORE_MAX_AGE) {
+      imageStore.delete(id);
+      console.log(`🗑️ [IMAGE STORE] Expired image: ${id}`);
+    }
   }
-});
+}, 5 * 60 * 1000); // Every 5 minutes
 
-// ─── Multer ────────────────────────────────────────────────────────────────────
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, uploadsDir),
-  filename: (req, file, cb) => {
-    const timestamp = Date.now();
-    const randomStr = Math.random().toString(36).substring(7);
-    const ext = path.extname(file.originalname).toLowerCase();
-    cb(null, `image_${timestamp}_${randomStr}${ext}`);
-  }
-});
-
-const fileFilter = (req, file, cb) => {
-  const allowed = ['image/png', 'image/jpeg', 'image/webp'];
-  if (allowed.includes(file.mimetype)) {
-    cb(null, true);
-  } else {
-    cb(new Error(`Invalid file type: ${file.mimetype}. Allowed: PNG, JPG, JPEG, WEBP`), false);
-  }
-};
-
+// ─── Multer (memory storage — no disk writes) ─────────────────────────────────
 const upload = multer({
-  storage,
-  fileFilter,
-  limits: { fileSize: 50 * 1024 * 1024 }
+  storage: multer.memoryStorage(),
+  fileFilter: (req, file, cb) => {
+    const allowed = ['image/png', 'image/jpeg', 'image/webp'];
+    if (allowed.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error(`Invalid file type: ${file.mimetype}. Allowed: PNG, JPG, JPEG, WEBP`), false);
+    }
+  },
+  limits: { fileSize: 10 * 1024 * 1024 } // 10MB max for in-memory
 });
 
 // ─── Middleware ────────────────────────────────────────────────────────────────
@@ -99,7 +92,6 @@ app.set('trust proxy', 1);
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 app.use(express.static(path.join(__dirname, "public")));
-app.use("/uploads", express.static(uploadsDir));
 
 app.use((req, res, next) => {
   console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
@@ -201,50 +193,58 @@ function getFriendlyErrorMessage(error, includeDebugInfo = false) {
   return "🤖 Kayn mouchkil temporary f service. 3awed jarrab.";
 }
 
-// ─── Helper: read image file ───────────────────────────────────────────────────
-function readImageFile(imageUrl) {
-  if (!imageUrl.startsWith('/uploads/')) {
-    throw new Error('Invalid image URL format');
-  }
-  const localPath = path.join(__dirname, imageUrl);
-  if (!fs.existsSync(localPath)) {
-    throw new Error(`Image file not found: ${localPath}`);
-  }
-  const fileBuffer = fs.readFileSync(localPath);
-  const base64 = fileBuffer.toString('base64');
-  const ext = path.extname(localPath).toLowerCase();
-  let mimeType = 'image/png';
-  if (ext === '.jpg' || ext === '.jpeg') mimeType = 'image/jpeg';
-  else if (ext === '.webp') mimeType = 'image/webp';
-  return { base64, mimeType, localPath, originalBuffer: fileBuffer };
+// ─── Helper: get image from in-memory store ───────────────────────────────────
+function getStoredImage(imageId) {
+  if (!imageId) throw new Error('No image ID provided');
+  const img = imageStore.get(imageId);
+  if (!img) throw new Error(`Image not found in store: ${imageId}. It may have expired.`);
+  return { base64: img.base64, mimeType: img.mimeType };
 }
 
-
-
 /* ═══════════════════════════════════════════════════════════════
-   IMAGE UPLOAD
+   IMAGE UPLOAD (in-memory, Vercel-compatible)
 ═══════════════════════════════════════════════════════════════ */
 app.post("/api/upload", upload.single("image"), (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ error: "No file provided", message: "Please select an image to upload" });
+      return res.status(400).json({ success: false, error: "No file provided", message: "Please select an image to upload" });
     }
 
-    const imageUrl = `/uploads/${req.file.filename}`;
+    // Generate unique ID for this image
+    const imageId = `img_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const base64 = req.file.buffer.toString('base64');
+    const mimeType = req.file.mimetype;
     const fileSize = (req.file.size / 1024 / 1024).toFixed(2);
 
-    console.log(`✅ [UPLOAD] ${req.file.originalname} → ${req.file.filename} (${fileSize}MB)`);
+    // Evict oldest if store is full
+    if (imageStore.size >= IMAGE_STORE_MAX_SIZE) {
+      const oldestKey = imageStore.keys().next().value;
+      imageStore.delete(oldestKey);
+      console.log(`🗑️ [IMAGE STORE] Evicted oldest image: ${oldestKey}`);
+    }
 
+    // Store in memory
+    imageStore.set(imageId, {
+      base64,
+      mimeType,
+      originalName: req.file.originalname,
+      uploadedAt: Date.now()
+    });
+
+    console.log(`✅ [UPLOAD] ${req.file.originalname} → ${imageId} (${fileSize}MB) | Store size: ${imageStore.size}`);
+
+    // Return the imageId (not a file path) and a data URI for preview
     res.json({
       success: true,
       message: "Image uploaded successfully",
-      imageUrl,
+      imageId,
+      imageUrl: `data:${mimeType};base64,${base64}`,
       fileName: req.file.originalname,
       fileSize
     });
   } catch (err) {
     console.error(`❌ UPLOAD ERROR: ${err.message}`);
-    res.status(500).json({ error: "Upload failed", message: err.message });
+    res.status(500).json({ success: false, error: "Upload failed", message: err.message });
   }
 });
 
@@ -252,32 +252,32 @@ app.post("/api/upload", upload.single("image"), (req, res) => {
 app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError) {
     if (err.code === 'LIMIT_FILE_SIZE') {
-      return res.status(413).json({ error: "File too large", message: "Maximum file size is 50MB" });
+      return res.status(413).json({ success: false, error: "File too large", message: "Maximum file size is 10MB" });
     }
-    return res.status(400).json({ error: "Upload error", message: err.message });
+    return res.status(400).json({ success: false, error: "Upload error", message: err.message });
   } else if (err && err.message && err.message.includes('Invalid file type')) {
-    return res.status(400).json({ error: "Invalid file type", message: err.message });
+    return res.status(400).json({ success: false, error: "Invalid file type", message: err.message });
   }
   next(err);
 });
 
 /* ═══════════════════════════════════════════════════════════════
-   CHAT API — WITH FILE-BASED PERSISTENCE
+   CHAT API — WITH IN-MEMORY IMAGE SUPPORT
 ═══════════════════════════════════════════════════════════════ */
 app.post("/api/chat", async (req, res) => {
   try {
-    const { message, imageUrl, sessionId } = req.body; // Changed userId, conversationId to sessionId
+    const { message, imageId, sessionId } = req.body;
 
     if (!message || message.trim() === "") {
       return res.status(400).json({ error: "Message cannot be empty" });
     }
 
-    if (!sessionId) { // Ensure sessionId exists
+    if (!sessionId) {
       return res.status(400).json({ error: "sessionId is required" });
     }
 
     console.log(
-      `\n📨 [CHAT] Session: ${sessionId} | Message: "${message.substring(0, 50)}${message.length > 50 ? "..." : ""}"${imageUrl ? ` | Image: ${imageUrl}` : ""}`
+      `\n📨 [CHAT] Session: ${sessionId} | Message: "${message.substring(0, 50)}${message.length > 50 ? "..." : ""}"${imageId ? ` | ImageId: ${imageId}` : ""}`
     );
 
     // 1️⃣ LOAD PREVIOUS MESSAGES FROM MEMORYSTORE
@@ -301,11 +301,11 @@ app.post("/api/chat", async (req, res) => {
       return res.status(500).json({ error: "Server Error", message: errorMsg });
     }
 
-    // Handle image if provided
-    if (imageUrl) {
+    // Handle image if provided (from in-memory store)
+    if (imageId) {
       try {
-        console.log(`🖼️  [IMAGE PROCESSING] Reading image from: ${imageUrl}`);
-        const { base64, mimeType } = readImageFile(imageUrl);
+        console.log(`🖼️  [IMAGE PROCESSING] Reading image from store: ${imageId}`);
+        const { base64, mimeType } = getStoredImage(imageId);
         console.log(
           `✅ [IMAGE LOADED] MIME type: ${mimeType}, Size: ${(base64.length / 1024).toFixed(2)}KB`
         );

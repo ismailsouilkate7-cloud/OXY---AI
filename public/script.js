@@ -595,6 +595,7 @@ function initConversationSystem() {
 let sessionId = localStorage.getItem('oxy_session_id') || generateSessionId();
 let selectedFile = null;
 let uploadedImageUrl = null;
+let uploadedImageId = null; // Server-side image ID for chat requests
 let isRequesting = false; // Request lock — prevents double submissions
 let lastRequestTime = 0;
 const MIN_REQUEST_INTERVAL = 1500; // 1.5 seconds min between requests
@@ -729,6 +730,7 @@ previewRemoveBtn.addEventListener('click', removeSelectedImage);
 function removeSelectedImage() {
   selectedFile = null;
   uploadedImageUrl = null;
+  uploadedImageId = null;
   inputImagePreview.style.display = 'none';
   attachBtn.classList.remove('has-image');
   updateSendButton();
@@ -771,11 +773,12 @@ async function uploadImage() {
 
     const data = await response.json();
 
-    if (!response.ok || !data.success || !data.imageUrl) {
+    if (!response.ok || !data.success) {
       throw new Error(data.message || 'Upload failed');
     }
 
-    uploadedImageUrl = data.imageUrl;
+    uploadedImageUrl = data.imageUrl; // data URI for preview
+    uploadedImageId = data.imageId;   // server-side ID for chat
     displayPreview();
     updateSendButton();
     showToast('✅ Image uploaded', 'success');
@@ -784,6 +787,7 @@ async function uploadImage() {
     showToast(`❌ Upload failed: ${err.message}`, 'error');
     selectedFile = null;
     uploadedImageUrl = null;
+    uploadedImageId = null;
   } finally {
     attachBtn.disabled = false;
     showUploadProgress(false);
@@ -838,6 +842,7 @@ async function sendMessage() {
   welcomeScreen.style.display = 'none';
 
   const currentImageUrl = uploadedImageUrl;
+  const currentImageId = uploadedImageId; // Capture before clearing
   const currentText = text;
 
   let conversationHistory = [...messages]; // Copy current messages for potential modification
@@ -884,8 +889,8 @@ async function sendMessage() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        message: currentText || (currentImageUrl ? 'What is this image?' : ''),
-        imageUrl: currentImageUrl || null,
+        message: currentText || (currentImageId ? 'What is this image?' : ''),
+        imageId: currentImageId || null,
         sessionId: sessionId, // Send persistent sessionId for memory continuity
         history: conversationHistory.map(msg => {
           const parts = [{ text: msg.text || '' }];

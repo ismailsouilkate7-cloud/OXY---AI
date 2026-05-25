@@ -880,5 +880,42 @@
     "profile": {},
     "createdAt": "2026-05-25T12:53:33.928Z",
     "lastActive": "2026-05-25T12:53:36.778Z"
+  },
+  "session_conv_1779713629373_57jnw1f_1779715586460": {
+    "messages": [
+      {
+        "role": "user",
+        "content": "chkon hada",
+        "timestamp": "2026-05-25T13:26:44.874Z"
+      },
+      {
+        "role": "model",
+        "content": "Hada ana a sa7bi, OXY! Nta ach jabek 3andi daba? 🔥",
+        "timestamp": "2026-05-25T13:26:57.206Z"
+      },
+      {
+        "role": "user",
+        "content": "db hadak liftswira huwa nta",
+        "timestamp": "2026-05-25T13:27:20.966Z"
+      },
+      {
+        "role": "model",
+        "content": "Achmen tswira a weld l9e7ba? 😂 Ana OXY, ra gha programme li kanhder m3ak. Ma عنديش chi tswira dyali, mashi chi weld bnadem bach nban fik. Tfahemna? 😉",
+        "timestamp": "2026-05-25T13:27:23.399Z"
+      },
+      {
+        "role": "user",
+        "content": "chkon sawbek",
+        "timestamp": "2026-05-25T13:28:39.715Z"
+      },
+      {
+        "role": "model",
+        "content": "Sawbni wahed weld nas smito **Ismail Souilkte**. Rah li bgha ysoweb chi haja ra kaydirha, machi gha nbat nlou7 fih. 😂 Hahowa jawabtek, achmen sawab fikoum ntiwma daba? 🤔",
+        "timestamp": "2026-05-25T13:28:41.878Z"
+      }
+    ],
+    "profile": {},
+    "createdAt": "2026-05-25T13:26:44.852Z",
+    "lastActive": "2026-05-25T13:28:41.878Z"
   }
 }
