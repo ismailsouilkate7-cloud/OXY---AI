@@ -604,7 +604,13 @@ app.post("/api/chat/stream", async (req, res) => {
     console.log("\n" + "=".repeat(60));
     console.log("📌 [STREAM ENTRY] POST /api/chat/stream");
     console.log("=".repeat(60));
-    console.log("Request body keys:", Object.keys(req.body || {}));
+    console.log("Request body keys:", req.body ? Object.keys(req.body) : "No body");
+
+    if (!req.body) {
+      console.log("❌ [STREAM] Request body is missing");
+      res.status(400).json({ success: false, reply: "Invalid request payload" });
+      return;
+    }
 
     const { message, imageId, sessionId } = req.body;
 
@@ -624,7 +630,7 @@ app.post("/api/chat/stream", async (req, res) => {
 
     // Check API key
     const apiKey = process.env.GEMINI_API_KEY;
-    console.log(`🔑 [STREAM] GEMINI_API_KEY present: ${apiKey ? "✅ YES (len: " + apiKey.length + ")" : "❌ MISSING"}`);
+    console.log(`🔑 [STREAM] GEMINI_API_KEY present: ${apiKey ? "✅ YES (len: " + apiKey.length + ", prefix: " + apiKey.substring(0,4) + ")" : "❌ MISSING"}`);
     if (!apiKey) {
       console.error("❌ FATAL: GEMINI_API_KEY is not configured");
       res.status(500).json({ success: false, reply: GENERIC_FRIENDLY_ERROR });
@@ -648,10 +654,23 @@ app.post("/api/chat/stream", async (req, res) => {
           res.writeHead(200, sseHeaders);
         }
         res.write(`data: ${JSON.stringify(data)}\n\n`);
+        if (res.flush) res.flush();
       } catch (writeErr) {
         console.error("❌ [SSE] Write error:", writeErr.message);
         throw writeErr;
       }
+    }
+
+    // Ping immediately to prevent Vercel 10s initial timeout
+    try {
+      if (!res.headersSent) {
+        res.writeHead(200, sseHeaders);
+        res.write(":\\n\\n"); // SSE comment to start connection and bypass proxy buffering
+        if (res.flush) res.flush();
+      }
+      console.log("📡 [STREAM] Sent initial Keep-Alive ping to client");
+    } catch (e) {
+      console.error("❌ [SSE] Keep-alive error:", e.message);
     }
 
     // Helper function to end the SSE stream
@@ -755,6 +774,7 @@ app.post("/api/chat/stream", async (req, res) => {
           }
 
           buffer += decoder.decode(value, { stream: true });
+          console.log("📥 [RAW CHUNK IN] length:", value ? value.length : 0);
 
           // Parse SSE events from Gemini
           const events = buffer.split("\n\n");
@@ -768,6 +788,8 @@ app.post("/api/chat/stream", async (req, res) => {
             if (jsonStr.startsWith("data: ")) {
               jsonStr = jsonStr.slice(6);
             }
+
+            console.log("Raw JSON chunk from Gemini:", jsonStr);
 
             const chunk = safeJsonParse(jsonStr);
             if (!chunk) continue;
@@ -783,6 +805,7 @@ app.post("/api/chat/stream", async (req, res) => {
 
         // Flush remaining buffer
         if (buffer.trim()) {
+          console.log("📥 [FLUSHING BUFFER] raw:", buffer);
           let jsonStr = buffer.trim();
           if (jsonStr.startsWith("data: ")) jsonStr = jsonStr.slice(6);
           const chunk = safeJsonParse(jsonStr);
