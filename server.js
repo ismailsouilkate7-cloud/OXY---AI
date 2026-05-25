@@ -48,7 +48,7 @@ kfch khasek tkon :
    - Natural conversation like chatting with a real human friend
    - Smooth, human, and helpful replies`;
 // ─── Init ──────────────────────────────────────────────────────────────────────
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || "");
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const app = express();
@@ -128,11 +128,10 @@ app.use((req, res, next) => {
 // ─── Rate Limiting — prevent 429 spam from frontend ──────────────────────────
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute window
-  max: 8,              // max 8 requests per minute per IP
+  max: 10,             // max 10 requests per minute per IP
   standardHeaders: true,
   legacyHeaders: false,
-  // Use req.ip for proper IP detection when behind proxy (trust proxy enabled above)
-  // Skip health checks if needed
+  // Skip health checks
   skip: (req, res) => req.path === '/health',
   message: {
     success: false,
@@ -143,6 +142,7 @@ const apiLimiter = rateLimit({
 
 // Apply rate limiter to all API routes
 app.use("/api/chat", apiLimiter);
+app.use("/api/chat/stream", apiLimiter);
 app.use("/api/analyze-image", apiLimiter);
 app.use("/api/upload", apiLimiter);
 
@@ -161,35 +161,256 @@ app.use((err, req, res, next) => {
 
 // ─── ALWAYS return this friendly message on ANY Gemini/API error ────────────
 // No quota, rate limit, debug info, stack traces, or provider details ever shown to users.
-const GENERIC_FRIENDLY_ERROR = "OXY is resting right now 😴, please try again in a few seconds.";
+const GENERIC_FRIENDLY_ERROR = "I'm a bit busy right now, but I'm still here to help you 😊";
+
+/**
+ * Categorizes an error and extracts meaningful details for server-side logging.
+ * NEVER exposes these details to the client.
+ */
+function categorizeError(error, context = '') {
+  const errorStr = typeof error === "string" ? error : (error?.message || error?.error?.message || "");
+  const lowerMsg = errorStr.toLowerCase();
+  const statusCode = error?.status || error?.statusCode || error?.response?.status;
+  const stack = error?.stack || "";
+
+  let category = "unknown";
+  let isRetryable = true;
+
+  // Invalid API key detection
+  if (
+    lowerMsg.includes("api key") ||
+    lowerMsg.includes("api_key") ||
+    lowerMsg.includes("invalid key") ||
+    lowerMsg.includes("unauthorized") ||
+    lowerMsg.includes("403") ||
+    lowerMsg.includes("not found") ||
+    (statusCode === 403) ||
+    (statusCode === 401) ||
+    (statusCode === 404 && lowerMsg.includes("key"))
+  ) {
+    category = "invalid_api_key";
+    isRetryable = false;
+  }
+  // Quota exceeded detection
+  else if (
+    lowerMsg.includes("quota") ||
+    lowerMsg.includes("rate limit") ||
+    lowerMsg.includes("429") ||
+    lowerMsg.includes("resource exhausted") ||
+    lowerMsg.includes("too many requests") ||
+    (statusCode === 429)
+  ) {
+    category = "quota_exceeded";
+    isRetryable = true;
+  }
+  // Network failure detection
+  else if (
+    lowerMsg.includes("network") ||
+    lowerMsg.includes("econnrefused") ||
+    lowerMsg.includes("econnreset") ||
+    lowerMsg.includes("enotfound") ||
+    lowerMsg.includes("timeout") ||
+    lowerMsg.includes("fetch failed") ||
+    lowerMsg.includes("abort") ||
+    lowerMsg.includes("dns") ||
+    lowerMsg.includes("socket") ||
+    lowerMsg.includes("connect") ||
+    error?.type === "network_error" ||
+    error?.code === "ECONNREFUSED" ||
+    error?.code === "ECONNRESET" ||
+    error?.code === "ENOTFOUND" ||
+    error?.code === "ETIMEDOUT"
+  ) {
+    category = "network_failure";
+    isRetryable = true;
+  }
+  // Model not found / disabled
+  else if (
+    lowerMsg.includes("model not found") ||
+    lowerMsg.includes("model not supported") ||
+    lowerMsg.includes("not found") ||
+    lowerMsg.includes("404")
+  ) {
+    category = "model_error";
+    isRetryable = false;
+  }
+  // Content blocked / safety error
+  else if (
+    lowerMsg.includes("blocked") ||
+    lowerMsg.includes("safety") ||
+    lowerMsg.includes("harmful") ||
+    lowerMsg.includes("inappropriate")
+  ) {
+    category = "content_blocked";
+    isRetryable = false;
+  }
+
+  // Server-side logging with full details
+  console.error("\n" + "=".repeat(80));
+  console.error(`❌ [API ERROR]${context ? ' [' + context + ']' : ''}`);
+  console.error("=".repeat(80));
+  console.error("Category:", category);
+  console.error("Retryable:", isRetryable);
+  console.error("Error Message:", errorStr);
+  console.error("Status Code:", statusCode);
+  if (stack) {
+    console.error("Stack Trace:", stack);
+  }
+  // Log full error details if available (safer serialization)
+  try {
+    const safeDetails = {};
+    for (const key of Object.getOwnPropertyNames(error)) {
+      if (key !== 'stack') {
+        safeDetails[key] = error[key];
+      }
+    }
+    if (Object.keys(safeDetails).length > 0) {
+      console.error("Full Error Properties:", JSON.stringify(safeDetails, null, 2));
+    }
+  } catch (e) {
+    // Ignore serialization errors
+  }
+  console.error("=".repeat(80) + "\n");
+
+  return { category, isRetryable, message: GENERIC_FRIENDLY_ERROR };
+}
+
+/**
+ * Safe JSON parse wrapper — returns parsed object or null.
+ */
+function safeJsonParse(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+// ─── Global unhandled rejection & exception handler (critical for Vercel) ───
+process.on('unhandledRejection', (reason, promise) => {
+  console.error("\n" + "❌".repeat(30));
+  console.error("⚠️  [GLOBAL] UNHANDLED PROMISE REJECTION");
+  console.error("Reason:", reason instanceof Error ? reason.message : reason);
+  console.error("Stack:", reason instanceof Error ? reason.stack : "No stack trace");
+  console.error("Promise:", promise);
+  console.error("❌".repeat(30) + "\n");
+});
+
+process.on('uncaughtException', (err) => {
+  console.error("\n" + "❌".repeat(30));
+  console.error("💥 [GLOBAL] UNCAUGHT EXCEPTION");
+  console.error("Error:", err.message);
+  console.error("Stack:", err.stack);
+  console.error("❌".repeat(30) + "\n");
+  // Do not exit — serverless functions restart on each invocation
+});
+
+/**
+ * Wraps a Gemini API SDK call with proper error handling.
+ * Returns { success: true, reply: string } or { success: false, reply: string }
+ */
+async function callGeminiSDK(model, contents) {
+  try {
+    const result = await model.generateContent(contents);
+    const reply = result?.response?.text?.();
+    if (reply) {
+      return { success: true, reply };
+    }
+    return { success: false, reply: GENERIC_FRIENDLY_ERROR };
+  } catch (err) {
+    categorizeError(err, 'gemini-sdk');
+    return { success: false, reply: GENERIC_FRIENDLY_ERROR };
+  }
+}
+
+/**
+ * Extracts retry delay from Gemini API 429 error response.
+ */
+function extractRetryDelay(data) {
+  try {
+    if (data?.error?.details) {
+      for (const detail of data.error.details) {
+        if (detail['@type'] === 'type.googleapis.com/google.rpc.RetryInfo' && detail.retryDelay) {
+          const match = detail.retryDelay.match(/(\d+\.?\d*)s/);
+          if (match) return parseFloat(match[1]) * 1000;
+        }
+      }
+    }
+  } catch {}
+  return 5000; // Default 5 second wait
+}
+
+/**
+ * Wraps a raw fetch call to Gemini REST API with proper error handling and auto-retry.
+ * Returns { success: true, reply: string } or { success: false, reply: string }
+ */
+async function callGeminiREST(url, body, retriesLeft = 2) {
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    const text = await response.text();
+    const data = safeJsonParse(text) || {};
+
+    if (!response.ok) {
+      const isQuota = response.status === 429;
+      const isServerError = response.status >= 500;
+      const isRetryable = isQuota || isServerError;
+
+      categorizeError(
+        { message: data?.error?.message || text, status: response.status },
+        isQuota ? 'gemini-rest-quota' : 'gemini-rest'
+      );
+
+      // Auto-retry on quota (429) or server errors (5xx)
+      if (isRetryable && retriesLeft > 0) {
+        const delay = isQuota ? extractRetryDelay(data) : 2000;
+        console.log(`🔄 [RETRY] ${isQuota ? 'Quota exceeded' : 'Server error'} — retrying in ${Math.round(delay / 1000)}s (${retriesLeft} retries left)`);
+        await new Promise(resolve => setTimeout(resolve, delay));
+        return callGeminiREST(url, body, retriesLeft - 1);
+      }
+
+      return { success: false, reply: GENERIC_FRIENDLY_ERROR };
+    }
+
+    const reply = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+
+    if (!reply) {
+      const errMsg = data?.error?.message || "No candidates in response";
+      console.error(`❌ [GEMINI] Empty response:`, JSON.stringify(data, null, 2));
+      return { success: false, reply: GENERIC_FRIENDLY_ERROR };
+    }
+
+    return { success: true, reply };
+  } catch (err) {
+    // Retry on network errors
+    if (retriesLeft > 0) {
+      console.log(`🔄 [RETRY] Network error — retrying in 2s (${retriesLeft} retries left)`);
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      return callGeminiREST(url, body, retriesLeft - 1);
+    }
+    categorizeError(err, 'gemini-rest-fetch');
+    return { success: false, reply: GENERIC_FRIENDLY_ERROR };
+  }
+}
 
 /**
  * Logs full error details server-side only.
  * Returns a generic friendly message — NO error details, provider names, or status codes.
  */
 function handleApiError(error, context = '') {
-  // Server-side logging with full details (for debugging)
-  const errorStr = typeof error === "string" ? error : (error?.message || error?.error?.message || JSON.stringify(error || ""));
-  const statusCode = error?.status || error?.statusCode;
-  const stack = error?.stack || "No stack trace";
-
-  console.error("\n" + "=".repeat(80));
-  console.error(`❌ [API ERROR]${context ? ' [' + context + ']' : ''}`);
-  console.error("=".repeat(80));
-  console.error("Error Message:", errorStr);
-  console.error("Status Code:", statusCode);
-  console.error("Stack Trace:", stack);
-  console.error("=".repeat(80) + "\n");
-
-  // NEVER return debug info to the client — always return the generic friendly message
+  categorizeError(error, context);
   return GENERIC_FRIENDLY_ERROR;
 }
 
 // ─── Helper: get image from in-memory store ───────────────────────────────────
 function getStoredImage(imageId) {
-  if (!imageId) throw new Error('No image ID provided');
+  if (!imageId) return null;
   const img = imageStore.get(imageId);
-  if (!img) throw new Error(`Image not found in store: ${imageId}. It may have expired.`);
+  if (!img) return null;
   return { base64: img.base64, mimeType: img.mimeType };
 }
 
@@ -254,8 +475,242 @@ app.use((err, req, res, next) => {
 });
 
 /* ═══════════════════════════════════════════════════════════════
-   CHAT API — WITH IN-MEMORY IMAGE SUPPORT
+   CHAT API — STREAMING VERSION (SSE)
 ═══════════════════════════════════════════════════════════════ */
+
+// Primary and fallback models (fastest path: try primary, then single fallback)
+const PRIMARY_MODEL = "gemini-2.5-flash";
+const FALLBACK_MODEL = "gemini-2.0-flash";
+
+/**
+ * Streams Gemini response via Server-Sent Events.
+ * Sends events:
+ *   data: {"token": "..."}   — each text chunk
+ *   data: {"done": true, "fullText": "..."}   — when stream completes
+ *   data: {"error": true, "message": "..."}   — on error
+ */
+async function streamGeminiResponse(endpoint, body, res) {
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...body, generationConfig: { ...body.generationConfig, responseMimeType: "text/plain" } }),
+    });
+
+    if (!response.ok) {
+      const text = await response.text();
+      const errData = safeJsonParse(text);
+      const status = response.status;
+
+      categorizeError(
+        { message: errData?.error?.message || text, status },
+        'gemini-stream'
+      );
+
+      // Send error event to client
+      const errMsg = "I'm a bit busy right now, but I'm still here to help you 😊";
+      res.write(`data: ${JSON.stringify({ error: true, message: errMsg })}\n\n`);
+      res.write(`data: ${JSON.stringify({ done: true, fullText: errMsg })}\n\n`);
+      res.end();
+      return { success: false, reply: errMsg };
+    }
+
+    // Read the stream
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let fullText = "";
+    let buffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // Parse SSE-like stream: Gemini returns data: {...}\n\n or pure JSON lines
+      // Handle both formats
+      let boundary;
+      if (buffer.includes("\n\n")) {
+        boundary = "\n\n";
+      } else if (buffer.includes("\n")) {
+        boundary = "\n";
+      } else {
+        continue;
+      }
+
+      const parts = buffer.split(boundary);
+      buffer = parts.pop(); // Keep incomplete part
+
+      for (const part of parts) {
+        const trimmed = part.trim();
+        if (!trimmed) continue;
+
+        // Remove "data: " prefix if present
+        const jsonStr = trimmed.startsWith("data: ") ? trimmed.slice(6) : trimmed;
+        const chunk = safeJsonParse(jsonStr);
+        if (!chunk) continue;
+
+        // Extract text from candidate
+        const text = chunk?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (text) {
+          fullText += text;
+          // Send token to client
+          res.write(`data: ${JSON.stringify({ token: text })}\n\n`);
+        }
+      }
+    }
+
+    // Flush remaining buffer
+    if (buffer.trim()) {
+      const jsonStr = buffer.trim().startsWith("data: ") ? buffer.trim().slice(6) : buffer.trim();
+      const chunk = safeJsonParse(jsonStr);
+      if (chunk) {
+        const text = chunk?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (text) {
+          fullText += text;
+          res.write(`data: ${JSON.stringify({ token: text })}\n\n`);
+        }
+      }
+    }
+
+    if (!fullText) {
+      fullText = GENERIC_FRIENDLY_ERROR;
+    }
+
+    // Signal completion
+    res.write(`data: ${JSON.stringify({ done: true, fullText })}\n\n`);
+    res.end();
+    return { success: true, reply: fullText };
+  } catch (err) {
+    categorizeError(err, 'gemini-stream-fetch');
+    const errMsg = GENERIC_FRIENDLY_ERROR;
+    try {
+      res.write(`data: ${JSON.stringify({ error: true, message: errMsg })}\n\n`);
+      res.write(`data: ${JSON.stringify({ done: true, fullText: errMsg })}\n\n`);
+      res.end();
+    } catch {}
+    return { success: false, reply: errMsg };
+  }
+}
+
+app.post("/api/chat/stream", async (req, res) => {
+  // Set SSE headers
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no"); // Disable nginx buffering
+  res.flushHeaders(); // Flush headers to establish SSE
+
+  try {
+    const { message, imageId, sessionId } = req.body;
+
+    if (!message || message.trim() === "") {
+      res.write(`data: ${JSON.stringify({ error: true, message: "Message cannot be empty" })}\n\n`);
+      res.end();
+      return;
+    }
+
+    if (!sessionId) {
+      res.write(`data: ${JSON.stringify({ error: true, message: "sessionId is required" })}\n\n`);
+      res.end();
+      return;
+    }
+
+    console.log(
+      `\n📨 [STREAM] Session: ${sessionId} | Message: "${message.substring(0, 50)}${message.length > 50 ? "..." : ""}"${imageId ? ` | ImageId: ${imageId}` : ""}`
+    );
+
+    // 1️⃣ LOAD PREVIOUS MESSAGES FROM MEMORYSTORE
+    const previousMessages = memoryStore.getLastMessages(sessionId, 10);
+    console.log(`📚 [MEMORY] Loaded ${previousMessages.length} previous messages for context`);
+
+    // 2️⃣ ADD CURRENT USER MESSAGE TO MEMORYSTORE
+    memoryStore.addUserMessage(sessionId, message);
+
+    // Check API key
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      console.error("❌ FATAL: GEMINI_API_KEY is not configured");
+      const errMsg = GENERIC_FRIENDLY_ERROR;
+      res.write(`data: ${JSON.stringify({ error: true, message: errMsg })}\n\n`);
+      res.write(`data: ${JSON.stringify({ done: true, fullText: errMsg })}\n\n`);
+      res.end();
+      return;
+    }
+
+    // Build request with conversation history
+    const contents = [];
+    for (const msg of previousMessages) {
+      if (msg.role === "user") {
+        contents.push({ role: "user", parts: [{ text: msg.content }] });
+      } else {
+        contents.push({ role: "model", parts: [{ text: msg.content }] });
+      }
+    }
+    contents.push({ parts: [{ text: message }] });
+
+    const requestBody = {
+      system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      contents: contents,
+    };
+
+    console.log(`📤 [REQUEST BODY] ${contents.length} total messages (${previousMessages.length} from memory + current)`);
+
+    // Try primary model first, then fallback if needed
+    let fullReply = null;
+    const modelsToTry = [PRIMARY_MODEL, FALLBACK_MODEL];
+
+    for (const modelName of modelsToTry) {
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:streamGenerateContent?alt=sse&key=${apiKey}`;
+
+      console.log(`\n📝 [STREAM] Model — ${modelName}`);
+
+      const result = await streamGeminiResponse(endpoint, requestBody, res);
+
+      // Check if the client disconnected
+      if (req.destroyed || res.writableEnded) {
+        console.log(`⚠️ [STREAM] Client disconnected during model ${modelName}`);
+        return;
+      }
+
+      if (result.success) {
+        fullReply = result.reply;
+        console.log(`✅ [STREAM] Success with model ${modelName}!`);
+        break;
+      }
+
+      console.log(`⚠️ [STREAM] Model ${modelName} failed, falling back...`);
+    }
+
+    if (fullReply === null) {
+      // Both models failed — error already sent by streamGeminiResponse
+      console.error(`❌ [STREAM] All models failed`);
+      if (!res.writableEnded) {
+        const errMsg = GENERIC_FRIENDLY_ERROR;
+        res.write(`data: ${JSON.stringify({ error: true, message: errMsg })}\n\n`);
+        res.write(`data: ${JSON.stringify({ done: true, fullText: errMsg })}\n\n`);
+        res.end();
+      }
+      return;
+    }
+
+    // 3️⃣ SAVE AI RESPONSE TO MEMORYSTORE
+    memoryStore.addAIMessage(sessionId, fullReply);
+
+  } catch (err) {
+    categorizeError(err, 'stream-endpoint');
+    if (!res.writableEnded) {
+      const errMsg = GENERIC_FRIENDLY_ERROR;
+      try {
+        res.write(`data: ${JSON.stringify({ error: true, message: errMsg })}\n\n`);
+        res.write(`data: ${JSON.stringify({ done: true, fullText: errMsg })}\n\n`);
+        res.end();
+      } catch {}
+    }
+  }
+});
+
+// ─── Legacy non-streaming chat API (kept for backward compatibility) ─────────
 app.post("/api/chat", async (req, res) => {
   try {
     const { message, imageId, sessionId } = req.body;
@@ -283,6 +738,8 @@ app.post("/api/chat", async (req, res) => {
 
     // 2️⃣ ADD CURRENT USER MESSAGE TO MEMORYSTORE
     memoryStore.addUserMessage(sessionId, message);
+
+    // Check API key before any Gemini calls
     const apiKey = process.env.GEMINI_API_KEY;
     console.log(
       `🔑 [API KEY CHECK] GEMINI_API_KEY present: ${apiKey ? "✅ YES" : "❌ MISSING"}`
@@ -297,9 +754,11 @@ app.post("/api/chat", async (req, res) => {
 
     // Handle image if provided (from in-memory store)
     if (imageId) {
-      try {
-        console.log(`🖼️  [IMAGE PROCESSING] Reading image from store: ${imageId}`);
-        const { base64, mimeType } = getStoredImage(imageId);
+      console.log(`🖼️  [IMAGE PROCESSING] Looking for image in store: ${imageId}`);
+      const storedImage = getStoredImage(imageId);
+
+      if (storedImage) {
+        const { base64, mimeType } = storedImage;
         console.log(
           `✅ [IMAGE LOADED] MIME type: ${mimeType}, Size: ${(base64.length / 1024).toFixed(2)}KB`
         );
@@ -337,43 +796,36 @@ app.post("/api/chat", async (req, res) => {
         console.log(
           `⏳ [API CALL] Sending request to Gemini API (image mode)...`
         );
-        const result = await model.generateContent(contentParts);
-        console.log(`📬 [API RESPONSE] Received response from Gemini API`);
-        const reply = result.response.text();
 
-        console.log(
-          `✅ [CHAT+IMAGE] Success! Reply: "${reply.substring(0, 100)}..."`
-        );
+        // Use the safe wrapper for SDK call
+        const result = await callGeminiSDK(model, contentParts);
 
-        // 3️⃣ SAVE AI RESPONSE TO MEMORYSTORE
-        memoryStore.addAIMessage(
-          sessionId,
-          reply
-        );
+        if (result.success) {
+          console.log(
+            `✅ [CHAT+IMAGE] Success! Reply: "${result.reply.substring(0, 100)}..."`
+          );
 
-        return res.json({
-          success: true,
-          reply,
-          sessionId: sessionId,
-          messagesCount: previousMessages.length + 2, // user + assistant
-        });
-      } catch (imgErr) {
-        // Log full error server-side only
-        console.error(`\n⚠️  [IMAGE ERROR] ${imgErr.message}`);
-        console.error(`Stack: ${imgErr.stack}`);
-        console.error(`Falling back to text-only mode...\n`);
-        // Continue to text-only fallback below — but don't expose the error to the user
+          // 3️⃣ SAVE AI RESPONSE TO MEMORYSTORE
+          memoryStore.addAIMessage(sessionId, result.reply);
+
+          return res.json({
+            success: true,
+            reply: result.reply,
+            sessionId: sessionId,
+            messagesCount: previousMessages.length + 2,
+          });
+        }
+
+        // SDK call failed — log and fall through to text-only fallback
+        console.log(`⚠️  [IMAGE CHAT FAILED] Falling back to text-only mode...`);
+      } else {
+        console.log(`⚠️  [IMAGE NOT FOUND] Image ${imageId} not in store or expired. Falling back to text-only.`);
       }
     }
 
     // TEXT-ONLY CHAT PATH WITH MEMORYSTORE & DEBUG LOGGING
-    const modelName = "gemini-2.0-flash";
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
-    console.log(`\n📝 [TEXT CHAT MODE]`);
-    console.log(`🤖 [MODEL] ${modelName}`);
-    console.log(
-      `🔗 [ENDPOINT] ${endpoint.replace(apiKey, "***API_KEY***")}`
-    );
+    // Try primary model first, then single fallback
+    const modelsToTry = [PRIMARY_MODEL, FALLBACK_MODEL];
 
     // Build request with conversation history
     const contents = [];
@@ -399,81 +851,48 @@ app.post("/api/chat", async (req, res) => {
       `📤 [REQUEST BODY] ${contents.length} total messages (${previousMessages.length} from memory + current)`
     );
     console.log(`📤 [REQUEST PAYLOAD]`, JSON.stringify(requestBody, null, 2));
-    console.log(
-      `⏳ [API CALL] Sending request to Gemini API (text mode)...`
-    );
 
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(requestBody),
-    });
+    let lastError = null;
+    let result = null;
 
-    console.log(
-      `📬 [API RESPONSE] Status: ${response.status} ${response.statusText}`
-    );
-    const data = await response.json();
-    console.log(`📨 [RESPONSE BODY]`, JSON.stringify(data, null, 2));
+    for (const modelName of modelsToTry) {
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
 
-    // If Gemini API returned an error (HTTP error, quota, rate limit, etc.)
-    // Log everything server-side, return only friendly message to user
-    if (!response.ok) {
-      console.error(`\n❌ [API ERROR] HTTP ${response.status} Response:`);
-      console.error(JSON.stringify(data, null, 2));
-      // Return ONLY the generic friendly message — NO error details exposed
-      return res.json({
-        success: false,
-        reply: GENERIC_FRIENDLY_ERROR
-      });
+      console.log(`\n📝 [TEXT CHAT MODE] Model — ${modelName}`);
+      console.log(`🔗 [ENDPOINT] ${endpoint.replace(apiKey, "***API_KEY***")}`);
+      console.log(`⏳ [API CALL] Sending request to Gemini API...`);
+
+      result = await callGeminiREST(endpoint, requestBody, 0); // No retries for speed
+
+      if (result.success) {
+        console.log(`✅ [CHAT] Success with model ${modelName}! Reply: "${result.reply.substring(0, 100)}..."`);
+        break;
+      }
+
+      lastError = result;
+      console.log(`⚠️  [CHAT] Model ${modelName} failed, falling back...`);
     }
 
-    if (!data.candidates || data.candidates.length === 0) {
-      console.error(`\n❌ [API ERROR] No candidates in response:`);
-      console.error(JSON.stringify(data, null, 2));
+    if (!result || !result.success) {
+      // Both models failed — return friendly message
       return res.json({
         success: false,
-        reply: GENERIC_FRIENDLY_ERROR
+        reply: lastError?.reply || GENERIC_FRIENDLY_ERROR
       });
     }
-
-    const reply = data.candidates[0]?.content?.parts?.[0]?.text;
-    if (!reply) {
-      console.error(`\n❌ [API ERROR] Empty text in candidate:`);
-      console.error(JSON.stringify(data.candidates[0], null, 2));
-      return res.json({
-        success: false,
-        reply: GENERIC_FRIENDLY_ERROR
-      });
-    }
-
-    console.log(
-      `✅ [CHAT] Success! Reply: "${reply.substring(0, 100)}..."`
-    );
 
     // 3️⃣ SAVE AI RESPONSE TO MEMORYSTORE
-    memoryStore.addAIMessage(
-      sessionId,
-      reply
-    );
+    memoryStore.addAIMessage(sessionId, result.reply);
 
     res.json({
       success: true,
-      reply,
+      reply: result.reply,
       sessionId: sessionId,
-      messagesCount: previousMessages.length + 2, // user + assistant
+      messagesCount: previousMessages.length + 2,
     });
   } catch (err) {
     // COMPREHENSIVE ERROR LOGGING — server-side only
-    console.error(`\n${"═".repeat(80)}`);
-    console.error(`❌ [CHAT ENDPOINT ERROR]`);
-    console.error(`${"═".repeat(80)}`);
-    console.error(`Error Name: ${err.name}`);
-    console.error(`Error Message: ${err.message}`);
-    console.error(`Error Code: ${err.code}`);
-    console.error(`Full Error Object:`, JSON.stringify(err, null, 2));
-    console.error(`Stack Trace:`, err.stack);
-    console.error(`${"═".repeat(80)}\n`);
-
+    categorizeError(err, 'chat-endpoint');
     // Return ONLY the generic friendly message — NO debug info, stack traces, or provider details
     res.json({
       success: false,
@@ -497,18 +916,18 @@ app.post("/api/sessions/:sessionId/clear", (req, res) => {
     const success = memoryStore.clearSessionMessages(sessionId);
 
     if (!success) {
-      return res.status(404).json({ error: "Session not found" });
+      return res.status(404).json({ success: false, reply: GENERIC_FRIENDLY_ERROR });
     }
 
     res.json({
       success: true,
-      message: `Messages in session ${sessionId} cleared`,
+      message: `Messages cleared`,
     });
   } catch (err) {
-    console.error(`❌ [API] Error clearing messages:`, err.message);
+    categorizeError(err, 'session-clear');
     res.status(500).json({
-      error: "Failed to clear messages",
-      message: err.message,
+      success: false,
+      reply: GENERIC_FRIENDLY_ERROR
     });
   }
 });
@@ -524,18 +943,18 @@ app.delete("/api/sessions/:sessionId", (req, res) => {
     const success = memoryStore.deleteSession(sessionId);
 
     if (!success) {
-      return res.status(404).json({ error: "Session not found" });
+      return res.status(404).json({ success: false, reply: GENERIC_FRIENDLY_ERROR });
     }
 
     res.json({
       success: true,
-      message: `Session ${sessionId} deleted`,
+      message: `Session deleted`,
     });
   } catch (err) {
-    console.error(`❌ [API] Error deleting session:`, err.message);
+    categorizeError(err, 'session-delete');
     res.status(500).json({
-      error: "Failed to delete session",
-      message: err.message,
+      success: false,
+      reply: GENERIC_FRIENDLY_ERROR
     });
   }
 });
@@ -550,7 +969,7 @@ app.get("/api/sessions/:sessionId/info", (req, res) => {
     const sessionInfo = memoryStore.getSessionInfo(sessionId);
 
     if (!sessionInfo) {
-      return res.status(404).json({ error: "Session not found" });
+      return res.status(404).json({ success: false, reply: GENERIC_FRIENDLY_ERROR });
     }
 
     res.json({
@@ -558,10 +977,10 @@ app.get("/api/sessions/:sessionId/info", (req, res) => {
       session: sessionInfo,
     });
   } catch (err) {
-    console.error(`❌ [API] Error fetching session info:`, err.message);
+    categorizeError(err, 'session-info');
     res.status(500).json({
-      error: "Failed to fetch session info",
-      message: err.message,
+      success: false,
+      reply: GENERIC_FRIENDLY_ERROR
     });
   }
 });
@@ -579,8 +998,8 @@ app.get("/api/sessions/:sessionId/messages", (req, res) => {
       limit > 0 ? limit : undefined
     );
 
-    if (!messages) {
-      return res.status(404).json({ error: "Session not found or no messages" });
+    if (!messages || messages.length === 0) {
+      return res.status(404).json({ success: false, reply: GENERIC_FRIENDLY_ERROR });
     }
 
     res.json({
@@ -590,10 +1009,10 @@ app.get("/api/sessions/:sessionId/messages", (req, res) => {
       messages,
     });
   } catch (err) {
-    console.error(`❌ [API] Error fetching messages:`, err.message);
+    categorizeError(err, 'session-messages');
     res.status(500).json({
-      error: "Failed to fetch messages",
-      message: err.message,
+      success: false,
+      reply: GENERIC_FRIENDLY_ERROR
     });
   }
 });
@@ -611,10 +1030,10 @@ app.get("/api/stats", (req, res) => {
       ...stats,
     });
   } catch (err) {
-    console.error(`❌ [API] Error fetching stats:`, err.message);
+    categorizeError(err, 'stats');
     res.status(500).json({
-      error: "Failed to get stats",
-      message: err.message,
+      success: false,
+      reply: GENERIC_FRIENDLY_ERROR
     });
   }
 });
@@ -625,17 +1044,17 @@ app.get("/api/stats", (req, res) => {
 app.use((req, res, next) => {
   if (req.path.startsWith("/api/")) return next();
   res.sendFile(path.join(__dirname, "public", "index.html"), err => {
-    if (err) res.status(404).json({ error: "Not Found", message: `Could not find ${req.path}` });
+    if (err) res.status(404).json({ success: false, reply: GENERIC_FRIENDLY_ERROR });
   });
 });
 
 app.use((req, res) => {
-  res.status(404).json({ error: "Not Found", message: `${req.method} ${req.path} does not exist` });
+  res.status(404).json({ success: false, reply: GENERIC_FRIENDLY_ERROR });
 });
 
 app.use((err, req, res, next) => {
-  console.error(`[ERROR] ${err.message}`);
-  res.status(500).json({ error: "Internal Server Error", message: "An unexpected error occurred" });
+  categorizeError(err, 'global-error-handler');
+  res.status(500).json({ success: false, reply: GENERIC_FRIENDLY_ERROR });
 });
 
 /* ═══════════════════════════════════════════════════════════════

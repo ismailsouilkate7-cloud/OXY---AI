@@ -177,11 +177,10 @@ function closeImageModal() {
 const STORAGE_KEY = 'oxy_conversations';
 const ACTIVE_CONV_KEY = 'oxy_active_conversation';
 
-let conversations = [];        // Array of conversation objects
-let activeConversationId = null; // ID of the currently active conversation
-let currentConversation = null; // The active conversation object (convenience ref)
+let conversations = [];
+let activeConversationId = null;
+let currentConversation = null;
 
-// Load conversations from localStorage
 function loadConversations() {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
@@ -193,7 +192,6 @@ function loadConversations() {
     conversations = [];
   }
   
-  // Load active conversation ID
   try {
     const activeId = localStorage.getItem(ACTIVE_CONV_KEY);
     if (activeId) {
@@ -204,9 +202,7 @@ function loadConversations() {
     console.warn('Failed to load active conversation:', e);
   }
   
-  // If no active conversation and we have conversations, use the most recent
   if (!currentConversation && conversations.length > 0) {
-    // Sort by updatedAt descending
     conversations.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
     currentConversation = conversations[0];
     activeConversationId = currentConversation.id;
@@ -214,7 +210,6 @@ function loadConversations() {
   }
 }
 
-// Save conversations to localStorage
 function saveConversations() {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(conversations));
@@ -223,7 +218,6 @@ function saveConversations() {
   }
 }
 
-// Save active conversation ID
 function saveActiveConversationId() {
   try {
     if (activeConversationId) {
@@ -236,36 +230,21 @@ function saveActiveConversationId() {
   }
 }
 
-// Generate a unique conversation ID
 function generateConversationId() {
   return `conv_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
 }
 
-// Generate title from first user message
-// Creates a short, meaningful summary (like ChatGPT) instead of using the raw message
 function generateTitle(text) {
   if (!text || !text.trim()) return 'New Chat';
   
-  // Step 1: Normalize — lower case, trim
   let normalized = text.trim().toLowerCase();
-  
-  // Step 2: Remove common greetings / filler / action verbs / question words
-  // These are words that don't help identify the topic
   const noiseWords = /\b(hi|hello|hey|salam|slm|slt|assalamu|alaykum|wa|alaikum|marhaba|ahlan|bien|bonjour|salut|good|morning|afternoon|evening|please|pls|can|could|would|will|may|should|might|must|the|a|an|is|are|was|were|been|being|do|does|did|done|doing|how|what|why|when|where|which|who|whom|whose|this|that|these|those|i|my|me|we|our|us|you|your|yours|he|she|it|they|them|their|create|make|write|build|show|tell|give|need|want|have|has|had|having|with|for|to|of|in|on|at|by|from|as|be|not|no|or|and|but|if|so|than|that|just|about|up|out|off|over|also|very|really|like|get|got|use|used|using|into|onto|upon|some|any|all|every|each|both|few|more|most|much|many|such|only|own|same|too|well|now|then|here|there|please|tell|explain|describe|define|list|give|help|assist)\b/gi;
   normalized = normalized.replace(noiseWords, ' ').trim();
-  
-  // Step 3: Remove special characters (keep letters, numbers, spaces, dots and hyphens for things like "node.js")
   normalized = normalized.replace(/[^a-zA-Z0-9\s.\-]/g, ' ').trim();
-  
-  // Step 4: Collapse multiple spaces
   normalized = normalized.replace(/\s+/g, ' ');
-  
-  // Step 5: Split into words, filter out short/meaningless ones
   let words = normalized.split(/\s+/).filter(w => w.length >= 2);
   
-  // Step 6: If no words remain after filtering, try extracting key content words from original
   if (words.length === 0) {
-    // Extract words that look like meaningful content (4+ chars, not filler)
     const contentPattern = /\b([a-zA-Z]{4,})\b/g;
     let match;
     const contentWords = [];
@@ -280,14 +259,11 @@ function generateTitle(text) {
     }
   }
   
-  // Step 7: Take max 3 words for a short title
   if (words.length > 3) {
     words = words.slice(0, 3);
   }
   
-  // Step 8: Build title in Title Case
   let title = words.map(word => {
-    // Handle words with dots (e.g., "node.js" → "Node.js")
     if (word.includes('.')) {
       return word.split('.').map((part, i) => 
         i === 0 ? part.charAt(0).toUpperCase() + part.slice(1) : part
@@ -296,12 +272,10 @@ function generateTitle(text) {
     return word.charAt(0).toUpperCase() + word.slice(1);
   }).join(' ');
   
-  // Step 9: Max 30 characters
   if (title.length > 30) {
     title = title.substring(0, 27) + '...';
   }
   
-  // Step 10: If still empty or too short, fall back
   if (title.length < 3) {
     title = 'New Chat';
   }
@@ -309,7 +283,6 @@ function generateTitle(text) {
   return title;
 }
 
-// Format date for display
 function formatDate(dateStr) {
   const date = new Date(dateStr);
   const now = new Date();
@@ -323,7 +296,6 @@ function formatDate(dateStr) {
   if (diffHours < 24) return `${diffHours}h ago`;
   if (diffDays < 7) return `${diffDays}d ago`;
   
-  // Return formatted date
   const options = { month: 'short', day: 'numeric' };
   if (date.getFullYear() !== now.getFullYear()) {
     options.year = 'numeric';
@@ -331,7 +303,6 @@ function formatDate(dateStr) {
   return date.toLocaleDateString('en-US', options);
 }
 
-// Create a new conversation
 function createNewConversation() {
   const now = new Date().toISOString();
   const id = generateConversationId();
@@ -355,12 +326,10 @@ function createNewConversation() {
   return conversation;
 }
 
-// Switch to a conversation
 function switchToConversation(conversationId) {
   const conversation = conversations.find(c => c.id === conversationId);
   if (!conversation) return;
   
-  // Cancel any editing state
   if (editingMessageId) {
     cancelEditMessage();
   }
@@ -369,19 +338,15 @@ function switchToConversation(conversationId) {
   currentConversation = conversation;
   saveActiveConversationId();
   
-  // Restore messages
-  messages = JSON.parse(JSON.stringify(conversation.messages)); // Deep clone
+  messages = JSON.parse(JSON.stringify(conversation.messages));
   
-  // Clear chat UI
   const messageElements = chatContainer.querySelectorAll('.message-row');
   messageElements.forEach(m => m.remove());
   
-  // Show welcome screen if no messages
   if (messages.length === 0) {
     welcomeScreen.style.display = 'flex';
   } else {
     welcomeScreen.style.display = 'none';
-    // Re-render all messages
     messages.forEach(msg => {
       const el = renderMessage(msg);
       chatContainer.appendChild(el);
@@ -391,16 +356,13 @@ function switchToConversation(conversationId) {
     attachImageClickListeners();
   }
   
-  // Update sidebar
   renderConversationList();
   updateChatTitle();
   
-  // Regenerate session ID for proper API continuity
   sessionId = `session_${conversationId}_${Date.now()}`;
   localStorage.setItem('oxy_session_id', sessionId);
 }
 
-// Update the current conversation's title from first user message
 function updateConversationTitle(title) {
   if (!currentConversation) return;
   
@@ -411,17 +373,15 @@ function updateConversationTitle(title) {
   updateChatTitle();
 }
 
-// Save current messages to the active conversation
 function saveMessagesToConversation() {
   if (!currentConversation) return;
   
-  currentConversation.messages = JSON.parse(JSON.stringify(messages)); // Deep clone
+  currentConversation.messages = JSON.parse(JSON.stringify(messages));
   currentConversation.updatedAt = new Date().toISOString();
   saveConversations();
   renderConversationList();
 }
 
-// Rename a conversation
 function renameConversation(conversationId, newTitle) {
   const conversation = conversations.find(c => c.id === conversationId);
   if (!conversation) return;
@@ -436,7 +396,6 @@ function renameConversation(conversationId, newTitle) {
   }
 }
 
-// Delete a conversation
 function deleteConversation(conversationId) {
   const index = conversations.findIndex(c => c.id === conversationId);
   if (index === -1) return;
@@ -444,12 +403,10 @@ function deleteConversation(conversationId) {
   conversations.splice(index, 1);
   saveConversations();
   
-  // If we deleted the active conversation, switch to another or create new
   if (activeConversationId === conversationId) {
     if (conversations.length > 0) {
       switchToConversation(conversations[0].id);
     } else {
-      // Clear everything
       activeConversationId = null;
       currentConversation = null;
       messages = [];
@@ -461,8 +418,6 @@ function deleteConversation(conversationId) {
       chatTitle.textContent = 'OXY AI';
       
       renderConversationList();
-      
-      // Generate new session
       sessionId = generateSessionId();
     }
   } else {
@@ -470,7 +425,6 @@ function deleteConversation(conversationId) {
   }
 }
 
-// Update chat title in header
 function updateChatTitle() {
   const chatTitle = document.getElementById('chatTitle');
   if (currentConversation && messages.length > 0) {
@@ -480,12 +434,10 @@ function updateChatTitle() {
   }
 }
 
-// Render the conversation list in sidebar
 function renderConversationList() {
   const list = document.getElementById('conversationList');
   if (!list) return;
   
-  // Sort by updatedAt descending (newest first)
   const sorted = [...conversations].sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
   
   if (sorted.length === 0) {
@@ -512,7 +464,6 @@ function renderConversationList() {
       </div>
     `;
     
-    // Click on content area to switch conversation
     item.querySelector('.conversation-item-content').addEventListener('click', (e) => {
       e.stopPropagation();
       if (conv.id !== activeConversationId) {
@@ -520,7 +471,6 @@ function renderConversationList() {
       }
     });
     
-    // Click on context menu button
     item.querySelector('[data-action="menu"]').addEventListener('click', (e) => {
       e.stopPropagation();
       const rect = e.currentTarget.getBoundingClientRect();
@@ -531,19 +481,16 @@ function renderConversationList() {
   });
 }
 
-// ─── Context Menu ──────────────────────────────────────────────
 let contextMenuTargetId = null;
 
 function showContextMenu(conversationId, x, y) {
   const menu = document.getElementById('conversationContextMenu');
   contextMenuTargetId = conversationId;
   
-  // Position the menu
   menu.style.left = Math.max(4, Math.min(x, window.innerWidth - 170)) + 'px';
   menu.style.top = Math.max(4, Math.min(y, window.innerHeight - 100)) + 'px';
   menu.style.display = 'block';
   
-  // Close menu on outside click
   setTimeout(() => {
     document.addEventListener('click', closeContextMenu, { once: true });
   }, 0);
@@ -555,13 +502,10 @@ function closeContextMenu() {
   contextMenuTargetId = null;
 }
 
-// ─── Initialize conversation system ────────────────────────────
 function initConversationSystem() {
   loadConversations();
   
-  // If we have an active conversation, restore it
   if (currentConversation) {
-    // Restore messages from active conversation
     messages = JSON.parse(JSON.stringify(currentConversation.messages));
     
     if (messages.length > 0) {
@@ -576,17 +520,14 @@ function initConversationSystem() {
     }
     updateChatTitle();
     
-    // Restore session from conversation
     sessionId = `session_${currentConversation.id}_${Date.now()}`;
     localStorage.setItem('oxy_session_id', sessionId);
   } else {
-    // Create first conversation
     createNewConversation();
   }
   
   renderConversationList();
 }
-
 
 // ==================== 
 // IMAGE UPLOAD & CHAT SYSTEM  
@@ -595,13 +536,17 @@ function initConversationSystem() {
 let sessionId = localStorage.getItem('oxy_session_id') || generateSessionId();
 let selectedFile = null;
 let uploadedImageUrl = null;
-let uploadedImageId = null; // Server-side image ID for chat requests
-let isRequesting = false; // Request lock — prevents double submissions
+let uploadedImageId = null;
+let isRequesting = false;
 let lastRequestTime = 0;
-const MIN_REQUEST_INTERVAL = 1500; // 1.5 seconds min between requests
+const MIN_REQUEST_INTERVAL = 1500;
 
-let messages = []; // Array to store messages
-let editingMessageId = null; // To store the ID of the message being edited
+let messages = [];
+let editingMessageId = null;
+
+// Streaming state
+let streamMessageId = null;
+let streamAbortController = null;
 
 function generateSessionId() {
   const id = `session_${Date.now()}_${Math.random().toString(36).substring(7)}`;
@@ -610,7 +555,6 @@ function generateSessionId() {
   return id;
 }
 
-// ─── Request lock helper ───────────────────────────────────────
 function canSendRequest() {
   if (isRequesting) return false;
   const now = Date.now();
@@ -625,7 +569,7 @@ function lockRequest() {
   sendBtn.style.cursor = 'wait';
   msgInput.disabled = true;
   attachBtn.disabled = true;
-  editControls.style.display = 'none'; // Hide edit controls when sending/editing
+  editControls.style.display = 'none';
 }
 
 function unlockRequest() {
@@ -634,7 +578,7 @@ function unlockRequest() {
   updateSendButton();
   attachBtn.disabled = false;
   if (editingMessageId) {
-    editControls.style.display = 'flex'; // Show edit controls if still editing
+    editControls.style.display = 'flex';
   }
 }
 
@@ -660,7 +604,6 @@ const saveEditBtn = document.getElementById('saveEditBtn');
 const cancelEditBtn = document.getElementById('cancelEditBtn');
 const chatTitle = document.getElementById('chatTitle');
 
-// ─── Auto-resize textarea ─────────────────────────────────────
 msgInput.addEventListener('input', () => {
   msgInput.style.height = 'auto';
   msgInput.style.height = Math.min(msgInput.scrollHeight, 200) + 'px';
@@ -680,16 +623,13 @@ function updateSendButton() {
   }
 }
 
-// ─── Attach button click ──────────────────────────────────────
 attachBtn.addEventListener('click', () => fileInput.click());
 
-// ─── File input change ────────────────────────────────────────
 fileInput.addEventListener('change', (e) => {
   handleFiles(e.target.files);
   fileInput.value = '';
 });
 
-// ─── Drag and drop (on whole input area) ──────────────────────
 let dragCounter = 0;
 
 inputArea.addEventListener('dragenter', (e) => {
@@ -724,7 +664,6 @@ inputArea.addEventListener('drop', (e) => {
   }
 });
 
-// ─── Remove preview ───────────────────────────────────────────
 previewRemoveBtn.addEventListener('click', removeSelectedImage);
 
 function removeSelectedImage() {
@@ -736,7 +675,6 @@ function removeSelectedImage() {
   updateSendButton();
 }
 
-// ─── Handle files ─────────────────────────────────────────────
 function handleFiles(files) {
   if (files.length === 0) return;
   const file = files[0];
@@ -755,7 +693,6 @@ function handleFiles(files) {
   uploadImage();
 }
 
-// ─── Upload image ─────────────────────────────────────────────
 async function uploadImage() {
   if (!selectedFile) return;
 
@@ -777,14 +714,14 @@ async function uploadImage() {
     throw new Error(data.message || 'Upload failed. Please try again.');
   }
 
-    uploadedImageUrl = data.imageUrl; // data URI for preview
-    uploadedImageId = data.imageId;   // server-side ID for chat
+    uploadedImageUrl = data.imageUrl;
+    uploadedImageId = data.imageId;
     displayPreview();
     updateSendButton();
     showToast('✅ Image uploaded', 'success');
 
   } catch (err) {
-    showToast(`❌ Upload failed: ${err.message}`, 'error');
+    showToast(`❌ Upload failed. Please try again.`, 'error');
     selectedFile = null;
     uploadedImageUrl = null;
     uploadedImageId = null;
@@ -794,7 +731,6 @@ async function uploadImage() {
   }
 }
 
-// ─── Display preview ──────────────────────────────────────────
 function displayPreview() {
   if (!selectedFile || !uploadedImageUrl) return;
   previewThumb.src = uploadedImageUrl;
@@ -804,7 +740,6 @@ function displayPreview() {
   attachBtn.classList.add('has-image');
 }
 
-// ─── Upload progress indicator ────────────────────────────────
 function showUploadProgress(show) {
   const existing = document.querySelector('.upload-progress');
   if (existing) existing.remove();
@@ -820,12 +755,17 @@ function showUploadProgress(show) {
   inputArea.insertBefore(div, inputImagePreview.nextSibling || inputArea.firstChild);
 }
 
-// ==================== 
-// SEND MESSAGE
-// ==================== 
+function updateStreamingMessage(id, text) {
+  const messageElement = document.getElementById(`message-${id}`);
+  if (!messageElement) return;
+
+  const aiBubble = messageElement.querySelector('.ai-bubble');
+  if (aiBubble) {
+    aiBubble.innerHTML = parseAndRenderMarkdown(text);
+  }
+}
 
 async function sendMessage() {
-  // Request lock — prevent double submissions
   if (!canSendRequest()) {
     showToast('⏳ Please wait, a request is already in progress.', 'info');
     return;
@@ -836,21 +776,23 @@ async function sendMessage() {
 
   if (!text && !hasImage) return;
 
+  if (streamAbortController) {
+    streamAbortController.abort();
+    streamAbortController = null;
+  }
+
   lockRequest();
 
-  // Hide welcome screen
   welcomeScreen.style.display = 'none';
 
   const currentImageUrl = uploadedImageUrl;
-  const currentImageId = uploadedImageId; // Capture before clearing
+  const currentImageId = uploadedImageId;
   const currentText = text;
 
-  let conversationHistory = [...messages]; // Copy current messages for potential modification
-
+  let conversationHistory = [...messages];
   let isFirstMessage = messages.length === 0;
 
   if (editingMessageId) {
-    // 1. Update the message in our local state
     const messageIndex = conversationHistory.findIndex(msg => msg.id === editingMessageId);
     if (messageIndex > -1) {
       conversationHistory[messageIndex] = {
@@ -859,99 +801,149 @@ async function sendMessage() {
         imageUrl: currentImageUrl,
         isEdited: true
       };
-      // 2. Clear all subsequent messages from local state and UI
       clearMessagesAfter(editingMessageId);
-      // Update the UI for the edited message
       updateMessageElement(editingMessageId, currentText, currentImageUrl, true);
     }
-    cancelEditMessage(); // Exit editing mode
+    cancelEditMessage();
   } else {
-    // Add new user message to chat
     const newMessageData = { id: generateMessageId(), text: currentText, imageUrl: currentImageUrl, sender: 'user' };
     addNewMessageToChat(newMessageData);
     conversationHistory.push(newMessageData);
   }
 
-  // Clear input
   msgInput.value = '';
   msgInput.style.height = 'auto';
   removeSelectedImage();
   updateSendButton();
 
-  // Remove existing AI typing indicator if present (e.g., from a previous regeneration)
   const existingTyping = document.getElementById('typingIndicator');
   if (existingTyping) existingTyping.remove();
 
-  const typingEl = addTypingIndicator();
+  streamMessageId = generateMessageId();
+  const streamMessageData = { id: streamMessageId, text: '', sender: 'ai' };
+  messages.push(streamMessageData);
+  const messageElement = renderMessage(streamMessageData);
+  chatContainer.appendChild(messageElement);
+  scrollToBottom();
+
+  streamAbortController = new AbortController();
+  let fullReply = '';
 
   try {
-    const response = await fetch('/api/chat', {
+    const response = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message: currentText || (currentImageId ? 'What is this image?' : ''),
         imageId: currentImageId || null,
-        sessionId: sessionId, // Send persistent sessionId for memory continuity
-        history: conversationHistory.map(msg => {
-          const parts = [{ text: msg.text || '' }];
-          if (msg.imageUrl) {
-            parts.push({ image_url: msg.imageUrl });
-          }
-          return {
-            role: msg.sender === 'user' ? 'user' : 'model',
-            parts: parts,
-          };
-        })
-      })
+        sessionId: sessionId,
+      }),
+      signal: streamAbortController.signal,
     });
 
-    const data = await response.json();
-
-    if (typingEl) typingEl.remove();
-
-    // Check for both HTTP errors and application-level errors
-    // HTTP errors (network level) - show generic message
     if (!response.ok) {
-      const aiMessage = { id: generateMessageId(), text: "OXY is resting right now 😴, please try again in a few seconds.", sender: 'ai' };
-      addNewMessageToChat(aiMessage);
-      conversationHistory.push(aiMessage);
-      
+      const errData = await response.json().catch(() => ({}));
+      const fallback = "I'm a bit busy right now, but I'm still here to help you 😊";
+      fullReply = errData.reply || fallback;
+
+      const msgIndex = messages.findIndex(m => m.id === streamMessageId);
+      if (msgIndex !== -1) {
+        messages[msgIndex].text = fullReply;
+      }
+      updateStreamingMessage(streamMessageId, fullReply);
+
+      conversationHistory.push({ id: streamMessageId, text: fullReply, sender: 'ai' });
       if (currentConversation) {
         currentConversation.messages = JSON.parse(JSON.stringify(conversationHistory));
-        saveMessagesToConversation();
+        if (isFirstMessage) {
+          const title = generateTitle(currentText);
+          currentConversation.title = title;
+        }
+        saveConversations();
+        renderConversationList();
+        updateChatTitle();
       }
-      
+
+      streamAbortController = null;
       unlockRequest();
       return;
     }
 
-    // Application-level error with friendly message
-    if (data.success === false) {
-      const replyText = data.reply || "OXY is resting right now 😴, please try again in a few seconds.";
-      const aiMessage = { id: generateMessageId(), text: replyText, sender: 'ai' };
-      addNewMessageToChat(aiMessage);
-      conversationHistory.push(aiMessage);
-      
-      // Save after error too, so user can revisit
-      if (currentConversation) {
-        currentConversation.messages = JSON.parse(JSON.stringify(conversationHistory));
-        saveMessagesToConversation();
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      const events = buffer.split('\n\n');
+      buffer = events.pop();
+
+      for (const event of events) {
+        const trimmed = event.trim();
+        if (!trimmed) continue;
+
+        let jsonStr = trimmed;
+        if (jsonStr.startsWith('data: ')) {
+          jsonStr = jsonStr.slice(6);
+        }
+
+        let parsed;
+        try {
+          parsed = JSON.parse(jsonStr);
+        } catch {
+          continue;
+        }
+
+        if (parsed.token) {
+          fullReply += parsed.token;
+          updateStreamingMessage(streamMessageId, fullReply);
+          scrollToBottom();
+          attachCodeBlockListeners();
+        }
+
+        if (parsed.error) {
+          fullReply = parsed.message || fullReply;
+          updateStreamingMessage(streamMessageId, fullReply);
+        }
+
+        if (parsed.done) {
+          if (parsed.fullText) {
+            fullReply = parsed.fullText;
+          }
+          break;
+        }
       }
-      
-      unlockRequest();
-      return;
     }
 
-    const replyText = data.reply || data.message || data.analysis;
-    const aiMessage = { id: generateMessageId(), text: replyText, sender: 'ai' };
-    addNewMessageToChat(aiMessage);
-    conversationHistory.push(aiMessage);
-    
-    // Save all messages to current conversation
+    if (buffer.trim()) {
+      let jsonStr = buffer.trim();
+      if (jsonStr.startsWith('data: ')) jsonStr = jsonStr.slice(6);
+      try {
+        const parsed = JSON.parse(jsonStr);
+        if (parsed.token) fullReply += parsed.token;
+        if (parsed.fullText) fullReply = parsed.fullText;
+      } catch {}
+    }
+
+    if (!fullReply) {
+      fullReply = "I'm a bit busy right now, but I'm still here to help you 😊";
+    }
+    updateStreamingMessage(streamMessageId, fullReply);
+
+    const msgIndex = messages.findIndex(m => m.id === streamMessageId);
+    if (msgIndex !== -1) {
+      messages[msgIndex].text = fullReply;
+    }
+
+    conversationHistory.push({ id: streamMessageId, text: fullReply, sender: 'ai' });
+
     if (currentConversation) {
       currentConversation.messages = JSON.parse(JSON.stringify(conversationHistory));
       
-      // If this was the first message, generate title from it
       if (isFirstMessage) {
         const title = generateTitle(currentText);
         currentConversation.title = title;
@@ -962,30 +954,37 @@ async function sendMessage() {
       updateChatTitle();
     }
 
+    // Send notification when AI reply completes
+    sendAINotification();
+
   } catch (err) {
-    if (typingEl) typingEl.remove();
-    const aiMessage = { id: generateMessageId(), text: "OXY is resting right now 😴, please try again in a few seconds.", sender: 'ai' };
-    addNewMessageToChat(aiMessage);
-    conversationHistory.push(aiMessage);
+    if (err.name === 'AbortError') {
+      console.log('⚠️ Stream aborted by user');
+      return;
+    }
+
+    console.error('Stream error:', err);
     
-    // Save even on error so messages aren't lost
+    if (!fullReply) {
+      fullReply = "I'm a bit busy right now, but I'm still here to help you 😊";
+    }
+    updateStreamingMessage(streamMessageId, fullReply);
+
+    const msgIndex = messages.findIndex(m => m.id === streamMessageId);
+    if (msgIndex !== -1) {
+      messages[msgIndex].text = fullReply;
+    }
+    conversationHistory.push({ id: streamMessageId, text: fullReply, sender: 'ai' });
+    
     if (currentConversation) {
       currentConversation.messages = JSON.parse(JSON.stringify(conversationHistory));
       saveMessagesToConversation();
     }
   }
 
+  streamAbortController = null;
   unlockRequest();
 }
-
-// ====================
-// IMAGE EDITING
-// ====================
-
-// Removed image editing as per instructions
-// ====================
-// CHAT MESSAGE BUILDERS
-// ====================
 
 function generateMessageId() {
   return `msg_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
@@ -995,7 +994,7 @@ function renderMessage(messageData) {
   const row = document.createElement('div');
   row.className = `message-row ${messageData.sender}-row`;
   row.id = `message-${messageData.id}`;
-  row.style.animationDelay = '0s'; // Reset animation delay
+  row.style.animationDelay = '0s';
 
   if (messageData.sender === 'user') {
     let content = '';
@@ -1021,18 +1020,17 @@ function renderMessage(messageData) {
       </div>
       ${messageData.isEdited ? '<div class="message-edited-badge">Edited</div>' : ''}`;
     
-    // Click on the user bubble to start editing
     row.querySelector('.user-bubble').addEventListener('click', (e) => {
-      // Don't trigger if clicking on the image or image action buttons
       if (e.target.closest('.message-image-container') || e.target.closest('.image-actions')) return;
       startEditMessage(messageData.id);
     });
-  } else { // AI message
-  row.innerHTML = `
+  } else {
+    const displayText = messageData.text || '';
+    row.innerHTML = `
     <div class="message-avatar">
       <img src="/logo.svg" alt="OXY" style="width:22px;height:22px;display:block" />
     </div>
-      <div class="message-bubble ai-bubble">${parseAndRenderMarkdown(messageData.text)}</div>`;
+      <div class="message-bubble ai-bubble">${displayText ? parseAndRenderMarkdown(displayText) : ''}</div>`;
   }
   return row;
 }
@@ -1046,12 +1044,10 @@ function addNewMessageToChat(messageData) {
   attachImageClickListeners();
 }
 
-
 function updateMessageElement(id, newText, newImageUrl, isEdited) {
   const messageElement = document.getElementById(`message-${id}`);
   if (!messageElement) return;
 
-  // Find the message in the global messages array and update it
   const messageIndex = messages.findIndex(msg => msg.id === id);
   if (messageIndex > -1) {
     messages[messageIndex] = {
@@ -1084,7 +1080,6 @@ function updateMessageElement(id, newText, newImageUrl, isEdited) {
     userBubble.innerHTML = `${content}`;
   }
   
-  // Update or add edited badge
   let editedBadge = messageElement.querySelector('.message-edited-badge');
   if (isEdited) {
     if (!editedBadge) {
@@ -1105,27 +1100,23 @@ function clearMessagesAfter(messageId) {
   const index = messages.findIndex(msg => msg.id === messageId);
   if (index === -1) return;
 
-  // Remove messages from the DOM
   for (let i = index + 1; i < messages.length; i++) {
     const elementToRemove = document.getElementById(`message-${messages[i].id}`);
     if (elementToRemove) {
       elementToRemove.remove();
     }
   }
-  // Truncate the messages array
   messages.splice(index + 1);
   
-  // Save the updated state after clearing
   if (currentConversation) {
     currentConversation.messages = JSON.parse(JSON.stringify(messages));
     saveMessagesToConversation();
   }
 }
 
-
 function startEditMessage(id) {
   const messageToEdit = messages.find(msg => msg.id === id);
-  if (!messageToEdit || messageToEdit.sender !== 'user') return; // Only allow editing user messages
+  if (!messageToEdit || messageToEdit.sender !== 'user') return;
 
   editingMessageId = id;
   msgInput.value = messageToEdit.text;
@@ -1136,7 +1127,6 @@ function startEditMessage(id) {
   sendBtn.style.display = 'none';
     msgInput.focus();
 
-  // Add a class to the message being edited for visual feedback
   const messageElement = document.getElementById(`message-${id}`);
   if (messageElement) {
     messageElement.classList.add('editing-active');
@@ -1144,7 +1134,6 @@ function startEditMessage(id) {
 
   if (messageToEdit.imageUrl) {
     uploadedImageUrl = messageToEdit.imageUrl;
-    // Simulate file for preview display, though actual file won't be re-uploaded
     selectedFile = { name: 're-attached-image.png', size: 0 };
     displayPreview();
   } else {
@@ -1170,32 +1159,13 @@ function cancelEditMessage() {
 updateSendButton();
 }
 
-saveEditBtn.addEventListener('click', sendMessage); // sendMessage will handle the update
+saveEditBtn.addEventListener('click', sendMessage);
 cancelEditBtn.addEventListener('click', cancelEditMessage);
-
-// Deprecated: Use addNewMessageToChat instead
-function addUserMessage(text, imageUrl) {
-  console.warn("addUserMessage is deprecated. Use addNewMessageToChat instead.");
-  addNewMessageToChat({ id: generateMessageId(), text, imageUrl, sender: 'user' });
-}
-
-// Deprecated: Use addNewMessageToChat instead
-function addAIMessage(text) {
-  console.warn("addAIMessage is deprecated. Use addNewMessageToChat instead.");
-  addNewMessageToChat({ id: generateMessageId(), text, sender: 'ai' });
-}
-
-// Deprecated: This was for image editing which is removed.
-function addAIMessageWithImage(text, imageUrl, editPrompt) {
-  console.warn("addAIMessageWithImage is deprecated and related to removed image editing feature.");
-  addNewMessageToChat({ id: generateMessageId(), text: text, imageUrl: imageUrl, sender: 'ai' });
-}
-
 
 function addErrorMessage(text) {
   const row = document.createElement('div');
   row.className = 'message-row error-row';
-  row.id = `message-${generateMessageId()}`; // Give error messages an ID too
+  row.id = `message-${generateMessageId()}`;
   row.style.animationDelay = '0s';
   row.innerHTML = `
     <div class="message-bubble error-bubble">
@@ -1227,33 +1197,6 @@ function addTypingIndicator() {
   return row;
 }
 
-// Removed image loading placeholder as image editing is removed
-/*
-function addImageLoadingPlaceholder(text) {
-  const row = document.createElement('div');
-  row.className = 'message-row ai-row';
-  row.style.animationDelay = '0s';
-  row.innerHTML = `
-    <div class="message-avatar">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
-    </div>
-
-    <div class="message-bubble ai-bubble">\
-      <div class="image-loading-placeholder">
-        <div class="image-loading-spinner"></div>
-        <span>${escapeHtml(text || 'Generating image...')}</span>
-      </div>
-    </div>`;
-  chatContainer.appendChild(row);
-  scrollToBottom();
-  return row;
-}
-*/
-
-// ====================
-// IMAGE ACTIONS
-// ====================
-
 function downloadImage(src) {
   const a = document.createElement('a');
   a.href = src;
@@ -1284,62 +1227,6 @@ function attachImageClickListeners() {
   });
 }
 
-// Removed image editing trigger
-/*
-function attachEditTriggers() {
-  document.querySelectorAll('.edit-trigger-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const imageUrl = btn.dataset.url;
-      const editPrompt = prompt('✏️ Describe how to edit this image:', '');
-      if (editPrompt && editPrompt.trim()) {
-        triggerEditFlow(imageUrl, editPrompt);
-      }
-    });
-  });
-}
-
-async function triggerEditFlow(imageUrl, editPrompt) {
-  const userRow = document.createElement('div');
-  userRow.className = 'message-row user-row';
-  userRow.style.animationDelay = '0s';
-  userRow.innerHTML = `
-    <div class="message-bubble user-bubble">
-      <div style="display:flex;align-items:center;gap:6px">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
-        Edit image: ${escapeHtml(editPrompt)}
-      </div>
-    </div>`;
-  chatContainer.appendChild(userRow);
-  scrollToBottom();
-
-  const placeholderEl = addImageLoadingPlaceholder('✏️ Editing image...');
-
-  try {
-    const result = await editImage(imageUrl, editPrompt);
-    placeholderEl.remove();
-    if (result.success) {
-      addAIMessageWithImage(
-        result.message || 'Here is the edited image:',
-        result.imageUrl,
-        editPrompt
-      );
-      showToast('✅ Image edited successfully!', 'success');
-    } else if (result.error === 'quota_exhausted_gemini_only') {
-      addAIMessage('✏️ ' + result.message);
-    } else {
-      addErrorMessage(result.message || 'Image editing failed');
-    }
-  } catch (err) {
-    placeholderEl.remove();
-    addErrorMessage(err.message);
-  }
-}
-*/
-
-// ====================
-// TOAST NOTIFICATIONS
-// ====================
-
 function showToast(message, type) {
   if (!type) type = 'info';
   const container = document.getElementById('toastContainer');
@@ -1363,19 +1250,11 @@ function showToast(message, type) {
   }, 3000);
 }
 
-// ====================
-// SCROLL
-// ====================
-
 function scrollToBottom() {
   setTimeout(() => {
     chatContainer.scrollTop = chatContainer.scrollHeight;
   }, 50);
 }
-
-// ====================
-// KEYBOARD SHORTCUTS
-// ====================
 
 msgInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
@@ -1386,7 +1265,6 @@ msgInput.addEventListener('keydown', (e) => {
 
 sendBtn.addEventListener('click', sendMessage);
 
-// ─── Suggestion chips ─────────────────────────────────────────
 document.querySelectorAll('.suggestion-chip').forEach(chip => {
   chip.addEventListener('click', () => {
     const msg = chip.dataset.msg;
@@ -1397,10 +1275,6 @@ document.querySelectorAll('.suggestion-chip').forEach(chip => {
     msgInput.focus();
   });
 });
-
-// ====================
-// MODAL HANDLERS
-// ====================
 
 document.getElementById('modalClose').addEventListener('click', closeImageModal);
 document.getElementById('modalBackdrop').addEventListener('click', closeImageModal);
@@ -1417,10 +1291,6 @@ document.getElementById('modalCopy').addEventListener('click', function () {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeImageModal();
 });
-
-// ====================
-// SIDEBAR TOGGLE (mobile)
-// ====================
 
 document.getElementById('mobileMenuBtn').addEventListener('click', () => {
   document.getElementById('sidebar').classList.toggle('open');
@@ -1440,14 +1310,11 @@ if (sidebarOverlay) {
   });
 }
 
-// ─── New Chat Button ──────────────────────────────────────────
 document.getElementById('newChatBtn').addEventListener('click', () => {
-  // Cancel any editing state
   if (editingMessageId) {
     cancelEditMessage();
   }
   
-  // Clear the chat
   const messageElements = chatContainer.querySelectorAll('.message-row');
   messageElements.forEach(m => m.remove());
   messages = [];
@@ -1457,15 +1324,11 @@ document.getElementById('newChatBtn').addEventListener('click', () => {
   msgInput.style.height = 'auto';
   updateSendButton();
   
-  // Create new conversation
   createNewConversation();
-  
-  // Generate new session
   sessionId = generateSessionId();
   console.log(`🗣️ [MEMORY] New chat session started: ${sessionId}`);
 });
 
-// ─── Context Menu Buttons ─────────────────────────────────────
 document.getElementById('renameConversationBtn').addEventListener('click', () => {
   const convId = contextMenuTargetId;
   closeContextMenu();
@@ -1491,14 +1354,67 @@ document.getElementById('deleteConversationBtn').addEventListener('click', () =>
   }
 });
 
-// Close context menu on scroll
 document.addEventListener('scroll', closeContextMenu, true);
 window.addEventListener('resize', closeContextMenu);
 
 updateSendButton();
 
-// ─── Initialize conversation system on page load ──────────────
-initConversationSystem();
+// ====================
+// PWA NOTIFICATIONS
+// ====================
+
+let notificationPermissionRequested = false;
+
+function requestNotificationPermission() {
+  if (!('Notification' in window)) {
+    console.log('📵 Notifications not supported in this browser');
+    return;
+  }
+
+  if (Notification.permission === 'granted') {
+    notificationPermissionRequested = true;
+    console.log('🔔 Notifications already granted');
+    return;
+  }
+
+  if (Notification.permission === 'denied') {
+    console.log('🔕 Notifications denied by user');
+    return;
+  }
+
+  if (notificationPermissionRequested) return;
+  notificationPermissionRequested = true;
+
+  Notification.requestPermission().then((permission) => {
+    if (permission === 'granted') {
+      console.log('🔔 Notification permission granted');
+    } else {
+      console.log('🔕 Notification permission denied');
+    }
+  }).catch((err) => {
+    console.log('🔕 Notification permission error:', err);
+  });
+}
+
+function sendAINotification() {
+  if (!('Notification' in window)) return;
+  if (Notification.permission !== 'granted') return;
+
+  try {
+    const notification = new Notification('OXY AI 🤖', {
+      body: 'OXY AI replied to your message',
+      icon: '/icon-192.png',
+      badge: '/icon-192.png',
+      tag: 'oxy-ai-response',
+      vibrate: [200, 100, 200],
+    });
+    notification.onshow = () => console.log('🔔 Notification sent');
+  } catch (err) {
+    console.log('🔕 Notification error:', err);
+  }
+}
+
+requestNotificationPermission();
 
 // ====================
 // PWA SERVICE WORKER
@@ -1512,3 +1428,6 @@ if ('serviceWorker' in navigator) {
     });
   });
 }
+
+// ─── Initialize conversation system on page load ──────────────
+initConversationSystem();

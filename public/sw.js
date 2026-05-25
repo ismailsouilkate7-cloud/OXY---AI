@@ -52,3 +52,29 @@ self.addEventListener('fetch', (event) => {
     })
   );
 });
+
+// ─── Notification click handler ───────────────────────────────
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+
+  // Open or focus the app when notification is clicked
+  const urlToOpen = '/';
+
+  event.waitUntil(
+    clients.matchAll({
+      type: 'window',
+      includeUncontrolled: true
+    }).then((windowClients) => {
+      // Check if an app window is already open
+      for (const client of windowClients) {
+        if (client.url.includes(self.location.origin) && 'focus' in client) {
+          return client.focus();
+        }
+      }
+      // Open a new window if none exists
+      if (clients.openWindow) {
+        return clients.openWindow(urlToOpen);
+      }
+    })
+  );
+});
