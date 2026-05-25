@@ -494,7 +494,7 @@ async function streamGeminiResponse(endpoint, body, res) {
     const response = await fetch(endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...body, generationConfig: { ...body.generationConfig, responseMimeType: "text/plain" } }),
+      body: JSON.stringify(body),
     });
 
     if (!response.ok) {
@@ -594,58 +594,107 @@ async function streamGeminiResponse(endpoint, body, res) {
 }
 
 app.post("/api/chat/stream", async (req, res) => {
-  // Set SSE headers
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no"); // Disable nginx buffering
-  res.flushHeaders(); // Flush headers to establish SSE
-
+  // ─── Vercel-compatible SSE setup ─────────────────────────────
+  // IMPORTANT: On Vercel serverless, Express's res.flushHeaders() can finalize
+  // the response prematurely, making subsequent res.write() calls fail silently.
+  // Instead, use res.writeHead() + res.write() to start streaming.
+  // We bypass Express response buffering by writing to the raw Node.js socket.
   try {
+    // Log entry for debugging
+    console.log("\n" + "=".repeat(60));
+    console.log("📌 [STREAM ENTRY] POST /api/chat/stream");
+    console.log("=".repeat(60));
+    console.log("Request body keys:", Object.keys(req.body || {}));
+
     const { message, imageId, sessionId } = req.body;
 
     if (!message || message.trim() === "") {
-      res.write(`data: ${JSON.stringify({ error: true, message: "Message cannot be empty" })}\n\n`);
-      res.end();
+      console.log("❌ [STREAM] Message is empty");
+      res.status(400).json({ success: false, reply: "Message cannot be empty" });
       return;
     }
 
     if (!sessionId) {
-      res.write(`data: ${JSON.stringify({ error: true, message: "sessionId is required" })}\n\n`);
-      res.end();
+      console.log("❌ [STREAM] No sessionId");
+      res.status(400).json({ success: false, reply: "sessionId is required" });
       return;
     }
 
-    console.log(
-      `\n📨 [STREAM] Session: ${sessionId} | Message: "${message.substring(0, 50)}${message.length > 50 ? "..." : ""}"${imageId ? ` | ImageId: ${imageId}` : ""}`
-    );
-
-    // 1️⃣ LOAD PREVIOUS MESSAGES FROM MEMORYSTORE
-    const previousMessages = memoryStore.getLastMessages(sessionId, 10);
-    console.log(`📚 [MEMORY] Loaded ${previousMessages.length} previous messages for context`);
-
-    // 2️⃣ ADD CURRENT USER MESSAGE TO MEMORYSTORE
-    memoryStore.addUserMessage(sessionId, message);
+    console.log(`📨 [STREAM] Session: ${sessionId.substring(0, 20)}... | Message: "${message.substring(0, 40)}${message.length > 40 ? "..." : ""}"${imageId ? ` | ImageId: ${imageId}` : ""}`);
 
     // Check API key
     const apiKey = process.env.GEMINI_API_KEY;
+    console.log(`🔑 [STREAM] GEMINI_API_KEY present: ${apiKey ? "✅ YES (len: " + apiKey.length + ")" : "❌ MISSING"}`);
     if (!apiKey) {
       console.error("❌ FATAL: GEMINI_API_KEY is not configured");
-      const errMsg = GENERIC_FRIENDLY_ERROR;
-      res.write(`data: ${JSON.stringify({ error: true, message: errMsg })}\n\n`);
-      res.write(`data: ${JSON.stringify({ done: true, fullText: errMsg })}\n\n`);
-      res.end();
+      res.status(500).json({ success: false, reply: GENERIC_FRIENDLY_ERROR });
       return;
     }
 
-    // Build request with conversation history
-    const contents = [];
-    for (const msg of previousMessages) {
-      if (msg.role === "user") {
-        contents.push({ role: "user", parts: [{ text: msg.content }] });
-      } else {
-        contents.push({ role: "model", parts: [{ text: msg.content }] });
+    // ─── VERCEL-COMPATIBLE SSE HEADERS ──────────────────────────
+    // Set headers using writeHead so they are sent immediately with the first write
+    // On Vercel, we write the headers and first data chunk atomically
+    const sseHeaders = {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive",
+      "X-Accel-Buffering": "no",
+    };
+
+    // Helper function to write an SSE event
+    function sseSend(data) {
+      try {
+        if (!res.headersSent) {
+          res.writeHead(200, sseHeaders);
+        }
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+      } catch (writeErr) {
+        console.error("❌ [SSE] Write error:", writeErr.message);
+        throw writeErr;
       }
+    }
+
+    // Helper function to end the SSE stream
+    function sseEnd() {
+      try {
+        if (!res.writableEnded) {
+          res.end();
+        }
+      } catch (endErr) {
+        console.error("❌ [SSE] End error:", endErr.message);
+      }
+    }
+
+    // 1️⃣ LOAD PREVIOUS MESSAGES FROM MEMORYSTORE
+    console.log("📚 [MEMORY] Loading previous messages...");
+    let previousMessages = [];
+    try {
+      previousMessages = memoryStore.getLastMessages(sessionId, 10) || [];
+    } catch (memErr) {
+      console.error("❌ [MEMORY] Error loading messages:", memErr.message);
+    }
+    console.log(`📚 [MEMORY] Loaded ${previousMessages.length} previous messages`);
+
+    // 2️⃣ ADD CURRENT USER MESSAGE TO MEMORYSTORE
+    try {
+      memoryStore.addUserMessage(sessionId, message);
+    } catch (memErr) {
+      console.error("❌ [MEMORY] Error adding user message:", memErr.message);
+    }
+
+    // Build request with conversation history
+    console.log("🔧 [STREAM] Building request body...");
+    const contents = [];
+    try {
+      for (const msg of previousMessages) {
+        if (msg && msg.role === "user") {
+          contents.push({ role: "user", parts: [{ text: msg.content || "" }] });
+        } else if (msg && msg.role === "model") {
+          contents.push({ role: "model", parts: [{ text: msg.content || "" }] });
+        }
+      }
+    } catch (buildErr) {
+      console.error("❌ [STREAM] Error building contents:", buildErr.message);
     }
     contents.push({ parts: [{ text: message }] });
 
@@ -654,58 +703,161 @@ app.post("/api/chat/stream", async (req, res) => {
       contents: contents,
     };
 
-    console.log(`📤 [REQUEST BODY] ${contents.length} total messages (${previousMessages.length} from memory + current)`);
+    console.log(`📤 [STREAM] ${contents.length} total messages`);
 
-    // Try primary model first, then fallback if needed
+    // ─── TRY PRIMARY MODEL THEN FALLBACK ────────────────────────
     let fullReply = null;
     const modelsToTry = [PRIMARY_MODEL, FALLBACK_MODEL];
 
     for (const modelName of modelsToTry) {
       const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:streamGenerateContent?alt=sse&key=${apiKey}`;
+      const safeEndpoint = endpoint.replace(apiKey, "***API_KEY***");
 
-      console.log(`\n📝 [STREAM] Model — ${modelName}`);
+      console.log(`\n🤖 [STREAM] Trying model: ${modelName}`);
+      console.log(`🔗 [STREAM] Endpoint: ${safeEndpoint}`);
 
-      const result = await streamGeminiResponse(endpoint, requestBody, res);
+      // Prepare one-time SSE send for this model attempt
+      let sseStarted = false;
 
-      // Check if the client disconnected
-      if (req.destroyed || res.writableEnded) {
-        console.log(`⚠️ [STREAM] Client disconnected during model ${modelName}`);
-        return;
-      }
+      try {
+        const response = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ...requestBody }),
+        });
 
-      if (result.success) {
-        fullReply = result.reply;
-        console.log(`✅ [STREAM] Success with model ${modelName}!`);
+        console.log(`📬 [STREAM] Gemini response status: ${response.status} ${response.statusText}`);
+
+        if (!response.ok) {
+          const errText = await response.text();
+          console.error(`❌ [STREAM] Gemini error (${response.status}): ${errText.substring(0, 500)}`);
+          categorizeError({ message: errText, status: response.status }, `gemini-stream-${modelName}`);
+          continue; // Try fallback model
+        }
+
+        // Stream is working — start sending SSE events to client
+        sseSend({ token: "" }); // Initial empty token to establish the stream
+        sseStarted = true;
+
+        // Read the Gemini SSE stream
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        fullReply = "";
+
+        console.log("📖 [STREAM] Reading Gemini stream...");
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            console.log("📖 [STREAM] Gemini stream done");
+            break;
+          }
+
+          buffer += decoder.decode(value, { stream: true });
+
+          // Parse SSE events from Gemini
+          const events = buffer.split("\n\n");
+          buffer = events.pop(); // Keep incomplete part
+
+          for (const event of events) {
+            const trimmed = event.trim();
+            if (!trimmed) continue;
+
+            let jsonStr = trimmed;
+            if (jsonStr.startsWith("data: ")) {
+              jsonStr = jsonStr.slice(6);
+            }
+
+            const chunk = safeJsonParse(jsonStr);
+            if (!chunk) continue;
+
+            // Extract text from candidate
+            const text = chunk?.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (text) {
+              fullReply += text;
+              sseSend({ token: text });
+            }
+          }
+        }
+
+        // Flush remaining buffer
+        if (buffer.trim()) {
+          let jsonStr = buffer.trim();
+          if (jsonStr.startsWith("data: ")) jsonStr = jsonStr.slice(6);
+          const chunk = safeJsonParse(jsonStr);
+          if (chunk) {
+            const text = chunk?.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (text) {
+              fullReply += text;
+              sseSend({ token: text });
+            }
+          }
+        }
+
+        if (!fullReply) {
+          console.error("❌ [STREAM] Empty response from Gemini");
+          // Don't continue to fallback — we already started SSE
+          fullReply = GENERIC_FRIENDLY_ERROR;
+        }
+
+        // Success — send done event and exit loop
+        console.log(`✅ [STREAM] Success with ${modelName}! Reply length: ${fullReply.length}`);
+        sseSend({ done: true, fullText: fullReply });
+        sseEnd();
         break;
-      }
 
-      console.log(`⚠️ [STREAM] Model ${modelName} failed, falling back...`);
+      } catch (modelErr) {
+        console.error(`❌ [STREAM] Model ${modelName} threw:`, modelErr.message);
+        console.error("Stack:", modelErr.stack);
+        categorizeError(modelErr, `gemini-stream-${modelName}`);
+
+        if (!sseStarted && modelName === modelsToTry[modelsToTry.length - 1]) {
+          // All models failed, send error
+          sseSend({ error: true, message: GENERIC_FRIENDLY_ERROR });
+          sseSend({ done: true, fullText: GENERIC_FRIENDLY_ERROR });
+          sseEnd();
+        }
+        continue;
+      }
     }
 
     if (fullReply === null) {
-      // Both models failed — error already sent by streamGeminiResponse
-      console.error(`❌ [STREAM] All models failed`);
-      if (!res.writableEnded) {
-        const errMsg = GENERIC_FRIENDLY_ERROR;
-        res.write(`data: ${JSON.stringify({ error: true, message: errMsg })}\n\n`);
-        res.write(`data: ${JSON.stringify({ done: true, fullText: errMsg })}\n\n`);
-        res.end();
+      console.error("❌ [STREAM] All models failed — no reply obtained");
+      if (!res.headersSent) {
+        res.status(500).json({ success: false, reply: GENERIC_FRIENDLY_ERROR });
+      } else {
+        try { sseSend({ error: true, message: GENERIC_FRIENDLY_ERROR }); sseSend({ done: true, fullText: GENERIC_FRIENDLY_ERROR }); sseEnd(); } catch {}
       }
       return;
     }
 
     // 3️⃣ SAVE AI RESPONSE TO MEMORYSTORE
-    memoryStore.addAIMessage(sessionId, fullReply);
+    try {
+      memoryStore.addAIMessage(sessionId, fullReply);
+      console.log("💾 [MEMORY] AI response saved");
+    } catch (memErr) {
+      console.error("❌ [MEMORY] Error saving AI message:", memErr.message);
+    }
+
+    console.log("=".repeat(60) + "\n");
 
   } catch (err) {
+    console.error("\n💥 [STREAM CATASTROPHIC ERROR]");
+    console.error("Message:", err.message);
+    console.error("Stack:", err.stack);
+    console.error("=".repeat(60) + "\n");
     categorizeError(err, 'stream-endpoint');
-    if (!res.writableEnded) {
-      const errMsg = GENERIC_FRIENDLY_ERROR;
-      try {
-        res.write(`data: ${JSON.stringify({ error: true, message: errMsg })}\n\n`);
-        res.write(`data: ${JSON.stringify({ done: true, fullText: errMsg })}\n\n`);
+    try {
+      if (!res.headersSent) {
+        res.status(500).json({ success: false, reply: GENERIC_FRIENDLY_ERROR });
+      } else if (!res.writableEnded) {
+        res.write(`data: ${JSON.stringify({ error: true, message: GENERIC_FRIENDLY_ERROR })}\n\n`);
+        res.write(`data: ${JSON.stringify({ done: true, fullText: GENERIC_FRIENDLY_ERROR })}\n\n`);
         res.end();
-      } catch {}
+      }
+    } catch (finalErr) {
+      console.error("❌ [STREAM] Final error handler failed:", finalErr.message);
     }
   }
 });
@@ -1058,20 +1210,32 @@ app.use((err, req, res, next) => {
 });
 
 /* ═══════════════════════════════════════════════════════════════
+   HEALTH CHECK
+═══════════════════════════════════════════════════════════════ */
+app.get("/health", (req, res) => {
+  res.json({ ok: true, timestamp: new Date().toISOString() });
+});
+
+/* ═══════════════════════════════════════════════════════════════
    START
 ═══════════════════════════════════════════════════════════════ */
 const PORT = process.env.PORT || 5173;
 
-// Removed database initialization on startup
-async function startServer() {
-  app.listen(PORT, () => {
-    console.log(`\n🚀 OXY AI running on port ${PORT}`);
-    console.log(`   Local: http://localhost:${PORT}`);
-    console.log(`   API:   http://localhost:${PORT}/api\n`);
+// Only self-start when NOT running on Vercel (Vercel uses export default)
+if (!process.env.VERCEL) {
+  async function startServer() {
+    app.listen(PORT, () => {
+      console.log(`\n🚀 OXY AI running on port ${PORT}`);
+      console.log(`   Local: http://localhost:${PORT}`);
+      console.log(`   API:   http://localhost:${PORT}/api\n`);
+    });
+  }
+
+  startServer().catch((err) => {
+    console.error("❌ [STARTUP] Failed to start server:", err.message);
+    process.exit(1);
   });
 }
 
-startServer().catch((err) => {
-  console.error("❌ [STARTUP] Failed to start server:", err.message);
-  process.exit(1);
-});
+// ─── Vercel serverless export ────────────────────────────────
+export default app;
