@@ -59,9 +59,9 @@ const allowedOrigins = [
   'https://oxy-ai.vercel.app',
   'https://oxy-ai-ismailsouilkate7-clouds-projects.vercel.app',
   'http://localhost:5173',
-  'http://localhost:3000',
+  'http://localhost:3010',
   'http://127.0.0.1:5173',
-  'http://127.0.0.1:3000',
+  'http://127.0.0.1:3010',
 ];
 
 app.use(cors({
@@ -480,7 +480,7 @@ app.use((err, req, res, next) => {
 
 // Primary and fallback models (fastest path: try primary, then single fallback)
 const PRIMARY_MODEL = "gemini-2.5-flash";
-const FALLBACK_MODEL = "gemini-2.0-flash";
+const FALLBACK_MODEL = "gemini-2.5-flash-lite"; // gemini-2.0-flash exhausted free-tier quota
 
 /**
  * Streams Gemini response via Server-Sent Events.
@@ -715,7 +715,8 @@ app.post("/api/chat/stream", async (req, res) => {
     } catch (buildErr) {
       console.error("❌ [STREAM] Error building contents:", buildErr.message);
     }
-    contents.push({ parts: [{ text: message }] });
+    // BUG FIX: role:'user' is REQUIRED on every content item — omitting it causes Gemini to return 400
+    contents.push({ role: "user", parts: [{ text: message }] });
 
     const requestBody = {
       system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
@@ -749,8 +750,17 @@ app.post("/api/chat/stream", async (req, res) => {
 
         if (!response.ok) {
           const errText = await response.text();
-          console.error(`❌ [STREAM] Gemini error (${response.status}): ${errText.substring(0, 500)}`);
-          categorizeError({ message: errText, status: response.status }, `gemini-stream-${modelName}`);
+          let errParsed = null;
+          try { errParsed = JSON.parse(errText); } catch {}
+          const exactMsg = errParsed?.error?.message || errText;
+          const errCode  = errParsed?.error?.code   || response.status;
+          const errStatus = errParsed?.error?.status || "UNKNOWN";
+          console.error(`❌ [STREAM] Model "${modelName}" failed:`);
+          console.error(`   HTTP Status : ${response.status} ${response.statusText}`);
+          console.error(`   Error Code  : ${errCode}`);
+          console.error(`   Error Status: ${errStatus}`);
+          console.error(`   Error Msg   : ${exactMsg.substring(0, 800)}`);
+          categorizeError({ message: exactMsg, status: response.status }, `gemini-stream-${modelName}`);
           continue; // Try fallback model
         }
 
@@ -1015,7 +1025,8 @@ app.post("/api/chat", async (req, res) => {
     }
 
     // Add current user message
-    contents.push({ parts: [{ text: message }] });
+    // BUG FIX: role:'user' is REQUIRED on every content item — omitting it causes Gemini to return 400
+    contents.push({ role: "user", parts: [{ text: message }] });
 
     const requestBody = {
       system_instruction: { parts: [{ text: SYSTEM_PROMPT }] },
@@ -1037,15 +1048,45 @@ app.post("/api/chat", async (req, res) => {
       console.log(`🔗 [ENDPOINT] ${endpoint.replace(apiKey, "***API_KEY***")}`);
       console.log(`⏳ [API CALL] Sending request to Gemini API...`);
 
-      result = await callGeminiREST(endpoint, requestBody, 0); // No retries for speed
+      // Make request directly to capture exact error details before callGeminiREST swallows them
+      try {
+        const rawRes = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(requestBody),
+        });
+        const rawText = await rawRes.text();
+        let rawParsed = null;
+        try { rawParsed = JSON.parse(rawText); } catch {}
 
-      if (result.success) {
-        console.log(`✅ [CHAT] Success with model ${modelName}! Reply: "${result.reply.substring(0, 100)}..."`);
-        break;
+        if (!rawRes.ok) {
+          const exactMsg  = rawParsed?.error?.message || rawText;
+          const errCode   = rawParsed?.error?.code    || rawRes.status;
+          const errStatus = rawParsed?.error?.status  || "UNKNOWN";
+          console.error(`❌ [CHAT] Model "${modelName}" failed:`);
+          console.error(`   HTTP Status : ${rawRes.status} ${rawRes.statusText}`);
+          console.error(`   Error Code  : ${errCode}`);
+          console.error(`   Error Status: ${errStatus}`);
+          console.error(`   Error Msg   : ${exactMsg.substring(0, 800)}`);
+          lastError = { success: false, reply: GENERIC_FRIENDLY_ERROR };
+          console.log(`⚠️  [CHAT] Model ${modelName} failed, trying next...`);
+          continue;
+        }
+
+        const replyText = rawParsed?.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (replyText) {
+          result = { success: true, reply: replyText };
+          console.log(`✅ [CHAT] Success with model ${modelName}! Reply: "${replyText.substring(0, 100)}..."`);
+          break;
+        } else {
+          console.error(`❌ [CHAT] Model "${modelName}" returned 200 but empty candidates:`);
+          console.error(JSON.stringify(rawParsed, null, 2));
+          lastError = { success: false, reply: GENERIC_FRIENDLY_ERROR };
+        }
+      } catch (fetchErr) {
+        console.error(`❌ [CHAT] Network error for model "${modelName}": ${fetchErr.message}`);
+        lastError = { success: false, reply: GENERIC_FRIENDLY_ERROR };
       }
-
-      lastError = result;
-      console.log(`⚠️  [CHAT] Model ${modelName} failed, falling back...`);
     }
 
     if (!result || !result.success) {
